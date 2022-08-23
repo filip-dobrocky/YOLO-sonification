@@ -43,6 +43,7 @@ class Object(Track):
     def get_distance(self, obj):
         return cv2.norm(self.pos[0] - obj.pos[0], self.pos[1] - obj.pos[1])
 
+
 class Tracker:
     def __init__(self, source = '0',
                        weights = 'yolov5n.pt',
