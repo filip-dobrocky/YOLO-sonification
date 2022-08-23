@@ -316,6 +316,7 @@ class LoadStreams:
         self.mode = 'stream'
         self.img_size = img_size
         self.stride = stride
+        self.count = 0
 
         if os.path.isfile(sources):
             with open(sources) as f:
@@ -374,6 +375,9 @@ class LoadStreams:
                     self.imgs[i] = np.zeros_like(self.imgs[i])
                     cap.open(stream)  # re-open stream if signal was lost
             time.sleep(0.0)  # wait time
+
+    def get_video_size(self, source):
+        return self.imgs[source].shape[:2]
 
     def __iter__(self):
         self.count = -1

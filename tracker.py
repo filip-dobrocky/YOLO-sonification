@@ -17,8 +17,31 @@ from yolov5.utils.plots import Annotator, colors, save_one_box
 from yolov5.utils.torch_utils import select_device, time_sync#, load_classifier
 
 import numpy as np
-from motpy import Detection, MultiObjectTracker
+from motpy import Detection, MultiObjectTracker, Track
 
+class Object(Track):
+    def __new__(cls, t: Track):
+        self = super(Object, cls).__new__(cls, t.id, t.box, t.score, t.class_id)
+        self.speed = 0
+        self.frame = 0
+        return self
+
+    def __hash__(self):
+        return hash(self.id)
+
+    def __eq__(self, other):
+        return self.id == other.id
+
+    @property
+    def pos(self):
+        return [int(self.box[0] + self.box[2]) / 2, int(self.box[1] + self.box[3]) / 2]
+
+    @property
+    def size(self):
+        return (self.box[2] - self.box[0]) * (self.box[3] - self.box[1])
+
+    def get_distance(self, obj):
+        return cv2.norm(self.pos[0] - obj.pos[0], self.pos[1] - obj.pos[1])
 
 class Tracker:
     def __init__(self, source = '0',
@@ -72,10 +95,20 @@ class Tracker:
             self.model(torch.zeros(1, 3, self.imgsz, self.imgsz)
                        .to(self.__device).type_as(next(self.model.parameters())))  # run once
 
-        self.__tracks = None
+        self.__prev_objs = set()
+        self.all_objs = dict()
+        self.new_objs = None
+        self.del_objs = None
 
+
+    @property
+    def video_size(self):
+        return self.dataset.get_video_size(0)
     def get_class_index(self, name):
         return list(self.names.keys())[list(self.names.values()).index(name)]
+
+    def get_class_name(self, id):
+        return self.names[id]
 
     def track(self, classes = None):
         # Run inference
@@ -97,6 +130,8 @@ class Tracker:
         # Apply Classifier
         # if self.classify:
         #    pred = apply_classifier(pred, modelc, img, im0s)
+
+        curr_objs = set()
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image
@@ -123,10 +158,21 @@ class Tracker:
                     out_detections.append(Detection(box=object_box, score=conf.to('cpu'), class_id=int(cls)))
 
                 self.__tracker.step(out_detections)
-                self.__tracks = self.__tracker.active_tracks(3)
+                tracks = self.__tracker.active_tracks(3)
 
-                for track in self.__tracks:
-                    label = f'{track.id[:5]}: {self.names[track.class_id]}'
+                for track in tracks:
+                    new_obj = Object(track)
+                    new_obj.frame = frame
+
+                    try:
+                        ex_obj = self.all_objs[new_obj.id]
+                        new_obj.speed = new_obj.get_distance(ex_obj) / (new_obj.frame - ex_obj.frame)
+                        self.all_objs[new_obj.id] = new_obj
+                    except KeyError:
+                        self.all_objs[new_obj.id] = new_obj
+                    curr_objs.add(new_obj)
+
+                    label = f'{track.id[:5]}: {self.get_class_name(track.class_id)}'
                     annotator = Annotator(im0, line_width=2, pil=not ascii)
                     annotator.box_label(track.box, label, color=colors(track.class_id, True))
                     im0 = annotator.result()
@@ -139,7 +185,11 @@ class Tracker:
                 cv2.imshow('result', im0)
                 cv2.waitKey(1)  # 1 millisecond
 
-        return self.__tracks
+        self.new_objs = curr_objs - self.__prev_objs
+        self.del_objs = self.__prev_objs - curr_objs
+        self.__prev_objs = curr_objs
+        return 0
+
 
 if __name__ == '__main__':
     check_requirements()
@@ -148,13 +198,18 @@ if __name__ == '__main__':
     #    strip_optimizer(tracker.weights)
 
     t0 = time.time()
-    #tracker = Tracker(source='https://www.youtube.com/watch?v=K4NiaXmXIhE')
+    #tracker = Tracker(source='https://www.youtube.com/watch?v=EUUT1CW_9cg')
     #class_index = tracker.get_class_index('car')
     #print("class: " + str(class_index))
     tracker = Tracker(source='0')
+    print(tracker.video_size)
     while True:
         try:
             tracker.track()
+            #print("New objects: " + str(tracker.new_objs))
+            #print("Expired objects: " + str(tracker.del_objs))
+            #for o in tracker.all_objs.values():
+            #    print("Speed " + str(o.speed))
         except StopIteration:
             print(f'Done. ({time.time() - t0:.3f}s)')
             break
