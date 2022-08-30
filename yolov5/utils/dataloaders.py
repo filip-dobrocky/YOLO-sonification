@@ -334,7 +334,7 @@ class LoadStreams:
             if urlparse(s).hostname in ('www.youtube.com', 'youtube.com', 'youtu.be'):  # if source is YouTube video
                 check_requirements(('pafy', 'youtube_dl==2020.12.2'))
                 import pafy
-                s = pafy.new(s).getbest(preftype="mp4").url  # YouTube URL
+                s = pafy.new(s).streams[0].url  # YouTube URL
             s = eval(s) if s.isnumeric() else s  # i.e. s = '0' local webcam
             if s == 0:
                 assert not is_colab(), '--source 0 webcam unsupported on Colab. Rerun command in a local environment.'
@@ -374,7 +374,7 @@ class LoadStreams:
                     LOGGER.warning('WARNING: Video stream unresponsive, please check your IP camera connection.')
                     self.imgs[i] = np.zeros_like(self.imgs[i])
                     cap.open(stream)  # re-open stream if signal was lost
-            time.sleep(0.0)  # wait time
+            time.sleep(0)  # wait time
 
     def get_video_size(self, source):
         return self.imgs[source].shape[:2]
