@@ -46,14 +46,13 @@ class Object(Track):
 
 class Tracker:
     def __init__(self, source = '0',
-                       weights = 'yolov5n.pt',
+                       weights = 'yolov5s.pt',
                        imgsz = 320,
-                       device = 'cpu',
                        augment = True,
                        conf_thres = 0.6,
                        iou_thres = 0.6,
                        agnostic_nms = True):
-        self.is_video = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
+        self.is_stream = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
             ('rtsp://', 'rtmp://', 'http://', 'https://'))
 
         self.weights, self.augment, self.conf_thres, self.iou_thres, self.agnostic_nms \
@@ -61,14 +60,11 @@ class Tracker:
 
         # Initialize
         set_logging()
-        self.__device = select_device(device)
+        self.__device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.__half = self.__device.type != 'cpu'  # half precision only supported on CUDA
 
-        # Create a multi object tracker
-        self.__tracker = MultiObjectTracker(dt=0.1)
-
         # Load model
-        self.model = attempt_load(weights, device='cpu')  # load FP32 model
+        self.model = attempt_load(weights, device=self.__device.type)  # load FP32 model
         stride = int(self.model.stride.max())  # model stride
         self.imgsz = check_img_size(imgsz, s=stride)  # check img_size
         if self.__half:
@@ -81,7 +77,7 @@ class Tracker:
         #     modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model']).to(device).eval()
 
         # Set Dataloader
-        if self.is_video:
+        if self.is_stream:
             self.view_img = check_imshow()
             cudnn.benchmark = True  # set True to speed up constant image size inference
             self.dataset = LoadStreams(source, img_size=imgsz, stride=stride)
@@ -96,6 +92,16 @@ class Tracker:
             self.model(torch.zeros(1, 3, self.imgsz, self.imgsz)
                        .to(self.__device).type_as(next(self.model.parameters())))  # run once
 
+        # Create a multi object tracker
+        self.__tracker = MultiObjectTracker(
+            dt=1 / self.dataset.fps[0],
+            tracker_kwargs={'max_staleness': 2},
+            model_spec={'order_pos': 1, 'dim_pos': 2,
+                        'order_size': 0, 'dim_size': 2,
+                        'q_var_pos': 5000., 'r_var_pos': 0.1},
+            matching_fn_kwargs={'min_iou': 0.4,
+                                'multi_match_min_iou': 0.93})
+
         self.__prev_objs = set()
         self.all_objs = dict()
         self.new_objs = None
@@ -105,6 +111,7 @@ class Tracker:
     @property
     def video_size(self):
         return self.dataset.get_video_size(0)
+
     def get_class_index(self, name):
         return list(self.names.keys())[list(self.names.values()).index(name)]
 
@@ -136,7 +143,7 @@ class Tracker:
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image
-            if self.is_video:  # batch_size >= 1
+            if self.is_stream:  # batch_size >= 1
                 s, im0, frame = '%g: ' % i, im0s[i].copy(), self.dataset.count
             else:
                 s, im0, frame = '', im0s, getattr(self.dataset, 'frame', 0)
