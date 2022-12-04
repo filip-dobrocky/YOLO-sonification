@@ -15,8 +15,9 @@ if __name__ == '__main__':
     fx_bus = server.add_bus_group(2, 'audio')
     rev = server.add_synth(synths.reverb, in_bus=fx_bus.bus_id)
 
-    tracker = Tracker(source='https://www.youtube.com/watch?v=cONRX_No2-w')
-    #tracker = Tracker(source="0")
+    # tracker = Tracker(source='https://www.youtube.com/watch?v=b1LEJCV6kPc')
+    tracker = Tracker(source="0")
+    # tracker = Tracker(source='rtsp://:8555/stream')
 
     synth_map = dict()
 
@@ -24,7 +25,7 @@ if __name__ == '__main__':
         try:
             all, new, deleted = tracker.track()
             for o in new:
-                if (o.class_id == 0):
+                if o.class_id == 0:
                     synth_map[o.id] = server.add_synth(synths.beeper, add_action='addBefore', fx_bus=fx_bus.bus_id)
                 else:
                     synth_map[o.id] = server.add_synth(synths.popcorn, add_action='addBefore', fx_bus=fx_bus.bus_id)

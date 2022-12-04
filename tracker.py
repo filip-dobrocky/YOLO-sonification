@@ -1,4 +1,5 @@
 import sys
+
 sys.path.append('yolov5')
 
 import argparse
@@ -11,19 +12,24 @@ import torch.backends.cudnn as cudnn
 
 from yolov5.models.experimental import attempt_load
 from yolov5.utils.dataloaders import LoadStreams, LoadImages
-from yolov5.utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, apply_classifier, \
+from yolov5.utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, \
+    apply_classifier, \
     scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path
 from yolov5.utils.plots import Annotator, colors, save_one_box
-from yolov5.utils.torch_utils import select_device, time_sync#, load_classifier
+from yolov5.utils.torch_utils import select_device, time_sync  # , load_classifier
 
 import numpy as np
 from motpy import Detection, MultiObjectTracker, Track
+
+from face_tracking import FaceTracker
+
 
 class Object(Track):
     def __new__(cls, t: Track):
         self = super(Object, cls).__new__(cls, t.id, t.box, t.score, t.class_id)
         self.speed = 0
         self.frame = 0
+        self.params = dict()
         return self
 
     def __hash__(self):
@@ -45,13 +51,13 @@ class Object(Track):
 
 
 class Tracker:
-    def __init__(self, source = '0',
-                       weights = 'yolov5s.pt',
-                       imgsz = 320,
-                       augment = True,
-                       conf_thres = 0.6,
-                       iou_thres = 0.6,
-                       agnostic_nms = True):
+    def __init__(self, source='0',
+                 weights='yolov5n.pt',
+                 imgsz=320,
+                 augment=True,
+                 conf_thres=0.5,
+                 iou_thres=0.6,
+                 agnostic_nms=True):
         self.is_stream = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
             ('rtsp://', 'rtmp://', 'http://', 'https://'))
 
@@ -59,7 +65,7 @@ class Tracker:
             = weights, augment, conf_thres, iou_thres, agnostic_nms
 
         # Initialize
-        set_logging()
+        # set_logging()
         self.__device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.__half = self.__device.type != 'cpu'  # half precision only supported on CUDA
 
@@ -82,6 +88,7 @@ class Tracker:
             cudnn.benchmark = True  # set True to speed up constant image size inference
             self.dataset = LoadStreams(source, img_size=imgsz, stride=stride)
         else:
+            self.view_img = check_imshow()
             self.save_img = True
             self.dataset = LoadImages(source, img_size=imgsz, stride=stride)
 
@@ -94,7 +101,7 @@ class Tracker:
 
         # Create a multi object tracker
         self.__tracker = MultiObjectTracker(
-            dt=1 / self.dataset.fps[0],
+            dt=0.1,
             tracker_kwargs={'max_staleness': 2},
             model_spec={'order_pos': 1, 'dim_pos': 2,
                         'order_size': 0, 'dim_size': 2,
@@ -107,6 +114,7 @@ class Tracker:
         self.new_objs = None
         self.del_objs = None
 
+        self.face_tracker = FaceTracker()
 
     @property
     def video_size(self):
@@ -118,7 +126,7 @@ class Tracker:
     def get_class_name(self, id):
         return self.names[id]
 
-    def track(self, classes = None):
+    def track(self, classes=None):
         # Run inference
         path, img, im0s, vid_cap, *aux = next(self.dataset)
         img = torch.from_numpy(img).to(self.__device)
@@ -169,21 +177,38 @@ class Tracker:
                 tracks = self.__tracker.active_tracks(3)
 
                 for track in tracks:
+                    annotator = Annotator(im0, line_width=2, pil=not ascii)
+
                     new_obj = Object(track)
                     new_obj.frame = frame
+                    id = new_obj.id
 
-                    try:
-                        ex_obj = self.all_objs[new_obj.id]
+                    # find out if object already exists, calc velocity and copy params
+                    if id in self.all_objs:
+                        ex_obj = self.all_objs[id]
+                        # velocity = difference in position over one frame
                         new_obj.speed = new_obj.get_distance(ex_obj) / (new_obj.frame - ex_obj.frame)
-                        self.all_objs[new_obj.id] = new_obj
-                    except KeyError:
-                        self.all_objs[new_obj.id] = new_obj
-                    curr_objs.add(new_obj)
+                        new_obj.params = ex_obj.params
 
-                    label = f'{track.id[:5]}: {self.get_class_name(track.class_id)}'
-                    annotator = Annotator(im0, line_width=2, pil=not ascii)
+                    # face tracking
+                    ft_freq = 10    # track every ft_freq frames
+                    if new_obj.class_id == self.get_class_index('person'):  # and new_obj.frame % 5 == 0:
+                        x1, y1, x2, y2 = new_obj.box
+                        if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0 and new_obj.frame % ft_freq == 0:
+                            emotion, reg = self.face_tracker.get_emotion(im0[int(y1):int(y2), int(x1):int(x2)])
+                            new_obj.params['emotion'] = emotion
+                            # face_box = (reg['x'] + x1,
+                            #             reg['y'] + y1,
+                            #             reg['x'] + reg['w'] + x1,
+                            #             reg['y'] + reg['h'] + y1)
+                            # annotator.box_label(face_box, emotion, color=colors(50, True))
+
+                    label = f'{track.id[:5]}: {self.get_class_name(track.class_id)} {new_obj.params}'
                     annotator.box_label(track.box, label, color=colors(track.class_id, True))
                     im0 = annotator.result()
+
+                    self.all_objs[id] = new_obj
+                    curr_objs.add(new_obj)
 
                 # Print time (inference + NMS)
                 print(f'{s}Done. ({t2 - t1:.3f}s)')
@@ -196,30 +221,30 @@ class Tracker:
         self.new_objs = curr_objs - self.__prev_objs
         self.del_objs = self.__prev_objs - curr_objs
         self.__prev_objs = curr_objs
-        return 0
+        return self.all_objs, self.new_objs, self.del_objs
 
 
 if __name__ == '__main__':
     check_requirements()
-    #with torch.no_grad():
+    # with torch.no_grad():
 
     #    strip_optimizer(tracker.weights)
 
     t0 = time.time()
-    #tracker = Tracker(source='https://www.youtube.com/watch?v=EUUT1CW_9cg')
-    #class_index = tracker.get_class_index('car')
-    #print("class: " + str(class_index))
+    # tracker = Tracker(source='https://www.youtube.com/watch?v=EUUT1CW_9cg')
+    # class_index = tracker.get_class_index('car')
+    # print("class: " + str(class_index))
     tracker = Tracker(source='0')
+    for i in range(0, 80):
+        print(tracker.get_class_name(i))
     print(tracker.video_size)
     while True:
         try:
             tracker.track()
-            #print("New objects: " + str(tracker.new_objs))
-            #print("Expired objects: " + str(tracker.del_objs))
-            #for o in tracker.all_objs.values():
+            # print("New objects: " + str(tracker.new_objs))
+            # print("Expired objects: " + str(tracker.del_objs))
+            # for o in tracker.all_objs.values():
             #    print("Speed " + str(o.speed))
         except StopIteration:
             print(f'Done. ({time.time() - t0:.3f}s)')
             break
-
-

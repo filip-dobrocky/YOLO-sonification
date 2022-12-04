@@ -41,6 +41,8 @@ if __name__ == '__main__':
     time.sleep(1)
     synth1['freq'] = 800
     synth2['freq'] = 200
+    for p in synth1.synthdef.parameter_names:
+        print(synth1[p])
     time.sleep(10)
     synth1.release()
     synth2.release()
