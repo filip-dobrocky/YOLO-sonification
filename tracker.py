@@ -43,7 +43,7 @@ class Object(Track):
         return [int(self.box[0] + self.box[2]) / 2, int(self.box[1] + self.box[3]) / 2]
 
     @property
-    def size(self):
+    def area(self):
         return (self.box[2] - self.box[0]) * (self.box[3] - self.box[1])
 
     def get_distance(self, obj):
@@ -75,12 +75,6 @@ class Tracker:
         self.imgsz = check_img_size(imgsz, s=stride)  # check img_size
         if self.__half:
             self.model.half()  # to FP16
-
-        # Second-stage classifier
-        # self.classify = False
-        # if classify:
-        #     modelc = load_classifier(name='resnet101', n=2)  # initialize
-        #     modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model']).to(device).eval()
 
         # Set Dataloader
         if self.is_stream:
@@ -120,6 +114,11 @@ class Tracker:
     def video_size(self):
         return self.dataset.get_video_size(0)
 
+    @property
+    def video_area(self):
+        size = self.dataset.get_video_size(0)
+        return size[0] * size[1]
+
     def get_class_index(self, name):
         return list(self.names.keys())[list(self.names.values()).index(name)]
 
@@ -142,10 +141,6 @@ class Tracker:
         pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, classes=classes,
                                    agnostic=self.agnostic_nms)
         t2 = time_sync()
-
-        # Apply Classifier
-        # if self.classify:
-        #    pred = apply_classifier(pred, modelc, img, im0s)
 
         curr_objs = set()
 
@@ -174,44 +169,39 @@ class Tracker:
                     out_detections.append(Detection(box=object_box, score=conf.to('cpu'), class_id=int(cls)))
 
                 self.__tracker.step(out_detections)
-                tracks = self.__tracker.active_tracks(3)
+                tracks = self.__tracker.active_tracks(min_steps_alive=3)
 
                 for track in tracks:
                     annotator = Annotator(im0, line_width=2, pil=not ascii)
 
-                    new_obj = Object(track)
-                    new_obj.frame = frame
-                    id = new_obj.id
+                    active_obj = Object(track)
+                    active_obj.frame = frame
+                    id = active_obj.id
 
                     # find out if object already exists, calc velocity and copy params
                     if id in self.all_objs:
                         ex_obj = self.all_objs[id]
                         # velocity = difference in position over one frame
-                        new_obj.speed = new_obj.get_distance(ex_obj) / (new_obj.frame - ex_obj.frame)
-                        new_obj.params = ex_obj.params
+                        active_obj.speed = active_obj.get_distance(ex_obj) / (active_obj.frame - ex_obj.frame)
+                        active_obj.params = ex_obj.params
 
                     # face tracking
-                    ft_freq = 10    # track every ft_freq frames
-                    if new_obj.class_id == self.get_class_index('person'):  # and new_obj.frame % 5 == 0:
-                        x1, y1, x2, y2 = new_obj.box
-                        if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0 and new_obj.frame % ft_freq == 0:
-                            emotion, reg = self.face_tracker.get_emotion(im0[int(y1):int(y2), int(x1):int(x2)])
-                            new_obj.params['emotion'] = emotion
-                            # face_box = (reg['x'] + x1,
-                            #             reg['y'] + y1,
-                            #             reg['x'] + reg['w'] + x1,
-                            #             reg['y'] + reg['h'] + y1)
-                            # annotator.box_label(face_box, emotion, color=colors(50, True))
+                    # ft_freq = 10    # track every ft_freq frames
+                    # if active_obj.class_id == self.get_class_index('person'):  # and active_obj.frame % 5 == 0:
+                    #     x1, y1, x2, y2 = active_obj.box
+                    #     if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0 and active_obj.frame % ft_freq == 0:
+                    #         emotion, reg = self.face_tracker.get_emotion(im0[int(y1):int(y2), int(x1):int(x2)])
+                    #         active_obj.params['emotion'] = emotion
 
-                    label = f'{track.id[:5]}: {self.get_class_name(track.class_id)} {new_obj.params}'
+                    label = f'{track.id[:5]}: {self.get_class_name(track.class_id)} {active_obj.params}'
                     annotator.box_label(track.box, label, color=colors(track.class_id, True))
                     im0 = annotator.result()
 
-                    self.all_objs[id] = new_obj
-                    curr_objs.add(new_obj)
+                    self.all_objs[id] = active_obj
+                    curr_objs.add(active_obj)
 
                 # Print time (inference + NMS)
-                print(f'{s}Done. ({t2 - t1:.3f}s)')
+                # print(f'{s}Done. ({t2 - t1:.3f}s)')
 
             # Stream results
             if self.view_img:
@@ -221,7 +211,9 @@ class Tracker:
         self.new_objs = curr_objs - self.__prev_objs
         self.del_objs = self.__prev_objs - curr_objs
         self.__prev_objs = curr_objs
-        return self.all_objs, self.new_objs, self.del_objs
+        for o in self.del_objs:
+            self.all_objs.pop(o.id)
+        return curr_objs, self.new_objs, self.del_objs
 
 
 if __name__ == '__main__':
