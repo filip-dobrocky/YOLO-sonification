@@ -1,5 +1,5 @@
 import supriya
-from supriya.ugens import In, Out, SinOsc, Saw, Dust, PlayBuf
+from supriya.ugens import In, Out, SinOsc, Saw, Dust, PlayBuf, FreeVerb
 from supriya.ugens.noise import WhiteNoise, Rand
 from supriya.ugens.filters import BPF, Decay2
 from supriya.ugens.panning import Pan2
@@ -42,10 +42,10 @@ def popcorn(fx_bus, out_bus=0, depth=0.5, freq=50, tempo=120, level=0.5, pan=0):
 
 
 @synthdef()
-def player(fx_bus, buffer, sample_rate, out_bus=0, depth=0.4, level=0.5, pan=0):
+def player(fx_bus, buffer, sample_rate, playback_rate, out_bus=0, depth=0.4, level=0.5, pan=0):
     gen = PlayBuf.ar(
         buffer_id=buffer,
-        rate=sample_rate/server.status.actual_sample_rate,
+        rate=playback_rate*(sample_rate/server.status.actual_sample_rate),
         loop=True
     )
     panned = level * Pan2.ar(gen, pan)
@@ -56,8 +56,11 @@ def player(fx_bus, buffer, sample_rate, out_bus=0, depth=0.4, level=0.5, pan=0):
 @synthdef()
 def reverb(in_bus, out_bus=0):
     buf = In.ar(in_bus, 2)
-    for i in range(16):
-        buf = AllpassC.ar(buf, 0.04, [Rand(0.001, 0.04), Rand(0.001, 0.04)], 3)
+
+    # for i in range(16):
+    #     buf = AllpassC.ar(buf, 0.04, [Rand(0.001, 0.04), Rand(0.001, 0.04)], 3)
+
+    buf = FreeVerb.ar(source=buf, mix=1.0, room_size=0.7)
     Out.ar(out_bus, buf)
 
 

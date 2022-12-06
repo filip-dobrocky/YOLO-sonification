@@ -21,7 +21,8 @@ if __name__ == '__main__':
     rev = synths.server.add_synth(synths.reverb, in_bus=fx_bus.bus_id)
 
     # tracker = Tracker(source='https://www.youtube.com/watch?v=b1LEJCV6kPc')
-    tracker = Tracker(source="0")
+    tracker = Tracker(source='https://www.youtube.com/watch?v=HOASHDryAwU')
+    # tracker = Tracker(source="0")
     # tracker = Tracker(source="D:\\Videos\\_VCR\\14 (5_2002-1_2003)_Trim.mp4")
     # tracker = Tracker(source='rtsp://:8555/stream')
 
@@ -61,11 +62,12 @@ if __name__ == '__main__':
                             synth['freq'] = 50 + 5000 * (1 - o.pos[1] / tracker.video_size[1])
                             synth['pan'] = (o.pos[0] / tracker.video_size[0]) * 2 - 1
                             synth['tempo'] = 100 + o.speed * 50
-                        else:
+                        elif synth.synthdef.name == 'player':
                             synth['pan'] = (o.pos[0] / tracker.video_size[0]) * 2 - 1
+                            synth['playback_rate'] = 1.0 + o.speed / 50
 
-                        synth['depth'] = 1 - (o.area / tracker.video_area)
-                        synth['level'] = 0.1 + 0.5 * (o.area / tracker.video_area)
+                        synth['depth'] = (1 - (o.area / tracker.video_area)) * 0.6
+                        synth['level'] = 0.2 + 0.5 * (o.area / tracker.video_area)
 
         except StopIteration:
             break
