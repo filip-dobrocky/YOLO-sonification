@@ -2,7 +2,7 @@ import os
 from pydub import AudioSegment
 
 
-DIR = './mp3'
+DIR = './mp3/emotions'
 directory = os.listdir(DIR)
 for f in directory:
     src = os.path.join(DIR, f)

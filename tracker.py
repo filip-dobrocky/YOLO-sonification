@@ -30,6 +30,7 @@ class Object(Track):
         self.speed = 0
         self.frame = 0
         self.params = dict()
+        self.params_changed = None
         return self
 
     def __hash__(self):
@@ -37,6 +38,12 @@ class Object(Track):
 
     def __eq__(self, other):
         return self.id == other.id
+
+    def set_params(self, p):
+        if self.params != p:
+            if self.params_changed is not None:
+                self.params_changed(self.id, p)
+            self.params = p
 
     @property
     def pos(self):
@@ -184,14 +191,16 @@ class Tracker:
                         # velocity = difference in position over one frame
                         active_obj.speed = active_obj.get_distance(ex_obj) / (active_obj.frame - ex_obj.frame)
                         active_obj.params = ex_obj.params
+                        active_obj.params_changed = ex_obj.params_changed
 
                     # face tracking
-                    # ft_freq = 10    # track every ft_freq frames
-                    # if active_obj.class_id == self.get_class_index('person'):  # and active_obj.frame % 5 == 0:
-                    #     x1, y1, x2, y2 = active_obj.box
-                    #     if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0 and active_obj.frame % ft_freq == 0:
-                    #         emotion, reg = self.face_tracker.get_emotion(im0[int(y1):int(y2), int(x1):int(x2)])
-                    #         active_obj.params['emotion'] = emotion
+                    ft_freq = 10    # track every ft_freq frames
+                    if active_obj.class_id == self.get_class_index('person'):  # and active_obj.frame % 5 == 0:
+                        x1, y1, x2, y2 = active_obj.box
+                        if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0 and active_obj.frame % ft_freq == 0:
+                            gender, emotion, reg = self.face_tracker.get_face(im0[int(y1):int(y2), int(x1):int(x2)])
+                            params = {'emotion': emotion, 'gender': gender}
+                            active_obj.set_params(params)
 
                     label = f'{track.id[:5]}: {self.get_class_name(track.class_id)} {active_obj.params}'
                     annotator.box_label(track.box, label, color=colors(track.class_id, True))
