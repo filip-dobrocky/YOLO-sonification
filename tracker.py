@@ -59,23 +59,21 @@ class Object(Track):
 
 class Tracker:
     def __init__(self, source='0',
-                 weights='yolov5n.pt',
+                 weights='yolov5n6.pt',
                  imgsz=320,
-                 augment=True,
                  conf_thres=0.5,
-                 iou_thres=0.6,
-                 agnostic_nms=True):
+                 iou_thres=0.2,
+                 agnostic_nms=False):
         self.is_stream = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
             ('rtsp://', 'rtmp://', 'http://', 'https://'))
 
-        self.weights, self.augment, self.conf_thres, self.iou_thres, self.agnostic_nms \
-            = weights, augment, conf_thres, iou_thres, agnostic_nms
+        self.weights, self.conf_thres, self.iou_thres, self.agnostic_nms \
+            = weights, conf_thres, iou_thres, agnostic_nms
 
         # Initialize
         # set_logging()
         self.__device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.__half = self.__device.type != 'cpu'  # half precision only supported on CUDA
-
         # Load model
         self.model = attempt_load(weights, device=self.__device.type)  # load FP32 model
         stride = int(self.model.stride.max())  # model stride
@@ -103,7 +101,7 @@ class Tracker:
         # Create a multi object tracker
         self.__tracker = MultiObjectTracker(
             dt=0.1,
-            tracker_kwargs={'max_staleness': 2},
+            tracker_kwargs={'max_staleness': 3},
             model_spec={'order_pos': 1, 'dim_pos': 2,
                         'order_size': 0, 'dim_size': 2,
                         'q_var_pos': 5000., 'r_var_pos': 0.1},
@@ -143,7 +141,7 @@ class Tracker:
 
         # Inference
         t1 = time_sync()
-        pred = self.model(img, augment=self.augment)[0]
+        pred = self.model(img, augment=False)[0]
         # Apply NMS
         pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, classes=classes,
                                    agnostic=self.agnostic_nms)
@@ -185,7 +183,7 @@ class Tracker:
                     active_obj.frame = frame
                     id = active_obj.id
 
-                    # find out if object already exists, calc velocity and copy params
+                    # find out if object already exists, calculate velocity and copy params
                     if id in self.all_objs:
                         ex_obj = self.all_objs[id]
                         # velocity = difference in position over one frame
@@ -195,7 +193,7 @@ class Tracker:
 
                     # face tracking
                     ft_freq = 10    # track every ft_freq frames
-                    if active_obj.class_id == self.get_class_index('person'):  # and active_obj.frame % 5 == 0:
+                    if active_obj.class_id == self.get_class_index('person'):
                         x1, y1, x2, y2 = active_obj.box
                         if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0 and active_obj.frame % ft_freq == 0:
                             gender, emotion, reg = self.face_tracker.get_face(im0[int(y1):int(y2), int(x1):int(x2)])

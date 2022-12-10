@@ -1,6 +1,6 @@
 import supriya
-from supriya.ugens import In, Out, SinOsc, Saw, Dust, PlayBuf, FreeVerb, EnvGen
-from supriya.ugens.noise import WhiteNoise, Rand
+from supriya.ugens import In, Out, SinOsc, Saw, Dust, PlayBuf, FreeVerb, EnvGen, GrainBuf, Compander
+from supriya.ugens.noise import WhiteNoise, Rand, ClipNoise
 from supriya.ugens.filters import BPF, Decay2
 from supriya.ugens.panning import Pan2
 from supriya.ugens.delay import AllpassC
@@ -15,11 +15,11 @@ server = supriya.Server().boot(port=7400)
 
 global_env = Envelope(
     amplitudes=(0, 1, 0),
-    durations=(1, 1),
+    durations=(0.3, 0.3),
     curves=(2, -2),
     release_node=1
 )
-# global_env = Envelope.asr(attack_time=0.5, sustain=1.0, release_time=0.5)
+
 
 def load_buffer_class(cls):
     DIR = './audio/wav'
@@ -42,35 +42,53 @@ def load_buffer_emotion(gender, emotion):
 
 
 @synthdef()
-def beeper(fx_bus, gate=1, out_bus=0, depth=0.4, freq=1, tempo=120, level=0.1, pan=0):
-    envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
-    gen = SinOsc.ar(freq) * level * 0.5 * (Saw.kr(tempo / 60) + 0.5)
-    panned = envelope * Pan2.ar(gen, pan)
-    Out.ar(fx_bus, panned * depth)
-    Out.ar(out_bus, panned * (1 - depth))
-
-
-@synthdef()
-def popcorn(fx_bus, gate=1, out_bus=0, depth=0.5, freq=50, tempo=120, level=0.5, pan=0):
-    source = BPF.ar(level * WhiteNoise.ar(), freq, 1.0)
-    envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
-    gen = Decay2.ar(Dust.ar(tempo / 60), 0.01, 0.2) * source
-    panned = envelope * Pan2.ar(gen, pan)
-    Out.ar(fx_bus, panned * depth)
-    Out.ar(out_bus, panned * (1 - depth))
-
-
-@synthdef()
-def player(fx_bus, buffer, sample_rate, playback_rate, gate=1, out_bus=0, depth=0.4, level=0.5, pan=0):
+def player(fx_bus, buffer, sample_rate, playback_rate=1, gate=1, out_bus=0, depth=0.4, level=0.5, pan=0):
     gen = PlayBuf.ar(
         buffer_id=buffer,
         rate=playback_rate*(sample_rate/server.status.actual_sample_rate),
         loop=True
     )
     envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
-    panned = envelope * level * Pan2.ar(gen, pan)
-    Out.ar(fx_bus, panned * depth)
-    Out.ar(out_bus, panned * (1 - depth))
+    out_sig = envelope * level * Pan2.ar(gen, pan)
+    Out.ar(fx_bus, out_sig * depth)
+    Out.ar(out_bus, out_sig * (1 - depth))
+
+
+@synthdef()
+def grainer(fx_bus, buffer, speed=0, speed_curve=0.6, gate=1, out_bus=0, depth=0.4, level=0.5, pan=0):
+    dust = Dust.ar(3+(speed**speed_curve)*9)
+    direction = ClipNoise.kr()
+    gen = GrainBuf.ar(
+        channel_count=1,
+        buffer_id=buffer,
+        rate=direction*(0.9+speed**speed_curve),
+        duration=0.1+dust*1.5*(1-speed**speed_curve),
+        position=dust,
+        trigger=dust
+    )
+    envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
+    out_sig = envelope * level * Pan2.ar(Compander.ar(gen), pan)
+    Out.ar(fx_bus, out_sig * depth)
+    Out.ar(out_bus, out_sig * (1 - depth))
+
+
+@synthdef()
+def beeper(fx_bus, gate=1, out_bus=0, depth=0.4, freq=1, tempo=120, level=0.1, pan=0):
+    envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
+    gen = SinOsc.ar(freq) * level * 0.5 * (Saw.kr(tempo / 60) + 0.5)
+    out_sig = 0.7 * envelope * Pan2.ar(gen, pan)
+    Out.ar(fx_bus, out_sig * depth)
+    Out.ar(out_bus, out_sig * (1 - depth))
+
+
+@synthdef()
+def duster(fx_bus, gate=1, out_bus=0, depth=0.5, freq=50, tempo=120, level=0.5, pan=0):
+    source = BPF.ar(level * WhiteNoise.ar(), freq, 1.0)
+    envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
+    gen = Decay2.ar(Dust.ar(tempo / 60), 0.01, 0.2) * source
+    out_sig = 0.9 * envelope * Pan2.ar(gen, pan)
+    Out.ar(fx_bus, out_sig * depth)
+    Out.ar(out_bus, out_sig * (1 - depth))
 
 
 @synthdef()
@@ -80,29 +98,36 @@ def reverb(in_bus, out_bus=0):
     # for i in range(16):
     #     buf = AllpassC.ar(buf, 0.04, [Rand(0.001, 0.04), Rand(0.001, 0.04)], 3)
 
-    buf = FreeVerb.ar(source=buf, mix=1.0, room_size=0.7)
+    buf = FreeVerb.ar(source=buf, mix=1.0, room_size=0.8, damping=0.4)
     Out.ar(out_bus, buf)
 
 
-if __name__ == '__main__':
-    server = supriya.Server().boot()
-    server.add_synthdef(reverb)
-    server.add_synthdef(popcorn)
-    server.add_synthdef(beeper)
+server.add_synthdef(reverb)
+server.add_synthdef(duster)
+server.add_synthdef(beeper)
+server.add_synthdef(grainer)
+server.add_synthdef(player)
 
-    b = load_buffer(server, '0', 0)
+
+if __name__ == '__main__':
+
+    # b = load_buffer_class(0)
+    b = load_buffer_emotion('Woman', 'sad')
 
     fx_bus = server.add_bus_group(2, 'audio')
     rev = server.add_synth(reverb, in_bus=fx_bus.bus_id)
-    synth1 = server.add_synth(popcorn, add_action='addBefore', fx_bus=fx_bus.bus_id)
-    synth2 = server.add_synth(beeper, add_action='addBefore', fx_bus=fx_bus.bus_id)
-    synth3 = server.add_synth(player, add_action='addBefore', fx_bus=fx_bus.bus_id, buffer=b, sample_rate=b.sample_rate)
+    # synth1 = server.add_synth(popcorn, add_action='addBefore', fx_bus=fx_bus.bus_id)
+    # synth2 = server.add_synth(beeper, add_action='addBefore', fx_bus=fx_bus.bus_id)
+    synth3 = server.add_synth(grainer, add_action='addBefore', fx_bus=fx_bus.bus_id, buffer=b, sample_rate=b.sample_rate, speed=0)
     time.sleep(1)
-    synth1['freq'] = 800
-    synth2['freq'] = 200
-    for p in synth1.synthdef.parameter_names:
-        print(synth1[p])
+    synth3['pan'] = 0.2
+    synth3['depth'] = 0.8
+    # synth2['freq'] = 200
+    # for p in synth1.synthdef.parameter_names:
+    #     print(synth1[p])
     time.sleep(10)
-    synth1.release()
-    synth2.release()
+    # synth1['gate'] = 0
+    # synth2['gate'] = 0
+    synth3['gate'] = 0
+    time.sleep(4)
     server.quit()
