@@ -2,6 +2,7 @@ import supriya
 import synths
 from tracker import Tracker, Object
 import torch
+import argparse
 
 synth_map = dict()
 buffers = dict()
@@ -37,16 +38,20 @@ def face_params_changed(id, params):
 if __name__ == '__main__':
     print('cuda ' + ('not ' if not torch.cuda.is_available() else '') + 'available' )
 
+    parser = argparse.ArgumentParser(description='Video sonification based on object tracking')
+    parser.add_argument('--source', type=str, default='0')
+    opt = parser.parse_args()
+    src = opt.source
+
+    # src = 'https://www.youtube.com/watch?v=b1LEJCV6kPc'
+    # src = 'https://www.youtube.com/watch?v=WJLkXlhE1FM'
+    # src = 'https://www.youtube.com/watch?v=HOASHDryAwU'
+    # src = 'https://www.youtube.com/watch?v=gu5p_TdU9vw'
+
+    tracker = Tracker(source=src)
+
     fx_bus = synths.server.add_bus_group(2, 'audio')
     rev = synths.server.add_synth(synths.reverb, in_bus=fx_bus.bus_id)
-
-    # tracker = Tracker(source='https://www.youtube.com/watch?v=b1LEJCV6kPc')
-    # tracker = Tracker(source='https://www.youtube.com/watch?v=WJLkXlhE1FM')
-    # tracker = Tracker(source='https://www.youtube.com/watch?v=HOASHDryAwU')
-    # tracker = Tracker(source='https://www.youtube.com/watch?v=gu5p_TdU9vw')
-    tracker = Tracker(source="0")
-    # tracker = Tracker(source="D:\\Videos\\_VCR\\14 (5_2002-1_2003)_Trim.mp4")
-    # tracker = Tracker(source='rtsp://:8555/stream')
 
     norm_h_pos = lambda x: x / tracker.video_size[0]
     norm_v_pos = lambda x: x / tracker.video_size[1]

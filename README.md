@@ -1,1 +1,1 @@
-Object Detection and Tracking Using YOLOv5 and motpy
+Object detection and tracking using YOLOv5 and motpy + sonification using SuperCollider API Supryia
