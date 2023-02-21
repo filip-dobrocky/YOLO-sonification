@@ -95,7 +95,6 @@ if __name__ == '__main__':
                         synth['pan'] = norm_h_pos(o.pos[0]) * 2 - 1
                         synth['depth'] = (1 - (o.area / tracker.video_area)) * 0.6
                         synth['level'] = 0.2 + 0.5 * (o.area / tracker.video_area)
-
         except StopIteration:
             break
 

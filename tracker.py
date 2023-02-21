@@ -1,7 +1,5 @@
 import sys
 
-sys.path.append('yolov5')
-
 import argparse
 import time
 from pathlib import Path
@@ -10,28 +8,37 @@ import cv2
 import torch
 import torch.backends.cudnn as cudnn
 
-from yolov5.models.experimental import attempt_load
-from yolov5.utils.dataloaders import LoadStreams, LoadImages
-from yolov5.utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, \
-    apply_classifier, \
-    scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path
-from yolov5.utils.plots import Annotator, colors, save_one_box
-from yolov5.utils.torch_utils import select_device, time_sync  # , load_classifier
+from yolo import YOLO, center, yolo_detections_to_norfair_detections
+
+import norfair
+from norfair import Detection, Paths, Video
+from norfair.tracker import TrackedObject
 
 import numpy as np
-from motpy import Detection, MultiObjectTracker, Track
 
 from face_tracking import FaceTracker
 
+# detection parameters
+CONF_THRESHOLD: float = 0.6
+IOU_THRESHOLD: float = 0.4
+IMAGE_SIZE: int = 640
 
-class Object(Track):
-    def __new__(cls, t: Track):
-        self = super(Object, cls).__new__(cls, t.id, t.box, t.score, t.class_id)
+# tracking parameters
+DISTANCE_THRESHOLD_BBOX: float = 0.7
+DISTANCE_THRESHOLD_CENTROID: int = 30
+MAX_DISTANCE: int = 10000
+
+
+class Object:
+    def __init__(self, o: TrackedObject):
+        self.id = o.global_id
+        det = o.last_detection
+        self.box = det.points[0][0], det.points[0][1], det.points[1][0], det.points[1][1]
+        self.class_id = det.label
         self.speed = 0
-        self.frame = 0
+        self.frame_num = 0
         self.params = dict()
         self.params_changed = None
-        return self
 
     def __hash__(self):
         return hash(self.id)
@@ -58,55 +65,20 @@ class Object(Track):
 
 
 class Tracker:
-    def __init__(self, source='0',
-                 weights='yolov5n6.pt',
-                 imgsz=320,
-                 conf_thres=0.5,
-                 iou_thres=0.2,
-                 agnostic_nms=False):
-        self.is_stream = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
-            ('rtsp://', 'rtmp://', 'http://', 'https://'))
+    def __init__(self, source='0'):
 
-        self.weights, self.conf_thres, self.iou_thres, self.agnostic_nms \
-            = weights, conf_thres, iou_thres, agnostic_nms
+        self.model = YOLO('./yolov7.pt')
+        self.names = self.model.model.names
 
-        # Initialize
-        # set_logging()
-        self.__device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.__half = self.__device.type != 'cpu'  # half precision only supported on CUDA
-        # Load model
-        self.model = attempt_load(weights, device=self.__device.type)  # load FP32 model
-        stride = int(self.model.stride.max())  # model stride
-        self.imgsz = check_img_size(imgsz, s=stride)  # check img_size
-        if self.__half:
-            self.model.half()  # to FP16
+        # TODO: youtube download
+        self.video = Video(camera=int(source)) if source.isnumeric() \
+            else Video(input_path=source)
+        self.video_iter = iter(self.video)
 
-        # Set Dataloader
-        if self.is_stream:
-            self.view_img = check_imshow()
-            cudnn.benchmark = True  # set True to speed up constant image size inference
-            self.dataset = LoadStreams(source, img_size=imgsz, stride=stride)
-        else:
-            self.view_img = check_imshow()
-            self.save_img = True
-            self.dataset = LoadImages(source, img_size=imgsz, stride=stride)
-
-        # Get names and colors
-        self.names = self.model.module.names if hasattr(self.model, 'module') else self.model.names
-
-        if self.__device.type != 'cpu':
-            self.model(torch.zeros(1, 3, self.imgsz, self.imgsz)
-                       .to(self.__device).type_as(next(self.model.parameters())))  # run once
-
-        # Create a multi object tracker
-        self.__tracker = MultiObjectTracker(
-            dt=0.1,
-            tracker_kwargs={'max_staleness': 3},
-            model_spec={'order_pos': 1, 'dim_pos': 2,
-                        'order_size': 0, 'dim_size': 2,
-                        'q_var_pos': 5000., 'r_var_pos': 0.1},
-            matching_fn_kwargs={'min_iou': 0.4,
-                                'multi_match_min_iou': 0.93})
+        self.tracker = norfair.Tracker(
+            distance_function='iou',
+            distance_threshold=DISTANCE_THRESHOLD_BBOX
+        )
 
         self.__prev_objs = set()
         self.all_objs = dict()
@@ -117,103 +89,65 @@ class Tracker:
 
     @property
     def video_size(self):
-        return self.dataset.get_video_size(0)
+        cap = self.video.video_capture
+        w, h = 0, 0
+        if cap.isOpened():
+            w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+        return w, h
 
     @property
     def video_area(self):
-        size = self.dataset.get_video_size(0)
+        size = self.video_size
         return size[0] * size[1]
 
     def get_class_index(self, name):
-        return list(self.names.keys())[list(self.names.values()).index(name)]
+        return self.names.index(name)
 
     def get_class_name(self, id):
         return self.names[id]
 
     def track(self, classes=None):
         # Run inference
-        path, img, im0s, vid_cap, *aux = next(self.dataset)
-        img = torch.from_numpy(img).to(self.__device)
-        img = img.half() if self.__half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
-        if img.ndimension() == 3:
-            img = img.unsqueeze(0)
-
-        # Inference
-        t1 = time_sync()
-        pred = self.model(img, augment=False)[0]
-        # Apply NMS
-        pred = non_max_suppression(pred, self.conf_thres, self.iou_thres, classes=classes,
-                                   agnostic=self.agnostic_nms)
-        t2 = time_sync()
+        frame = next(self.video_iter)
+        frame_num = self.video.frame_counter
+        yolo_detections = self.model(frame,
+                                     conf_threshold=CONF_THRESHOLD,
+                                     iou_threshold=IOU_THRESHOLD,
+                                     image_size=IMAGE_SIZE)
+        detections = yolo_detections_to_norfair_detections(yolo_detections, track_points='bbox')
 
         curr_objs = set()
 
-        # Process detections
-        for i, det in enumerate(pred):  # detections per image
-            if self.is_stream:  # batch_size >= 1
-                s, im0, frame = '%g: ' % i, im0s[i].copy(), self.dataset.count
-            else:
-                s, im0, frame = '', im0s, getattr(self.dataset, 'frame', 0)
+        tracks = self.tracker.update(detections)
 
-            s += '%gx%g ' % img.shape[2:]  # print string
-            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
-            if len(det):
-                # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+        norfair.draw_tracked_boxes(frame, tracks)
+        self.video.show(frame)
 
-                # Print results
-                for c in det[:, -1].unique():
-                    n = (det[:, -1] == c).sum()  # detections per class
-                    s += f"{n} {self.names[int(c)]}{'s' * (n > 1)}, "  # add to string
+        for track in tracks:
+            active_obj = Object(track)
+            active_obj.frame_num = frame_num
+            id = active_obj.id
 
-                # Write results
-                out_detections = []
-                for *xyxy, conf, cls in reversed(det):
-                    object_box = np.array([int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])])
-                    out_detections.append(Detection(box=object_box, score=conf.to('cpu'), class_id=int(cls)))
+            # find out if object already exists, calculate velocity and copy params
+            if id in self.all_objs:
+                ex_obj = self.all_objs[id]
+                # velocity = difference in position over one frame
+                active_obj.speed = active_obj.get_distance(ex_obj) / (active_obj.frame_num - ex_obj.frame_num)
+                active_obj.params = ex_obj.params
+                active_obj.params_changed = ex_obj.params_changed
 
-                self.__tracker.step(out_detections)
-                tracks = self.__tracker.active_tracks(min_steps_alive=3)
+            # face tracking
+            ft_freq = 10  # track every ft_freq frames
+            if active_obj.class_id == self.get_class_index('person'):
+                x1, y1, x2, y2 = active_obj.box
+                if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0 and active_obj.frame_num % ft_freq == 0:
+                    gender, emotion, reg = self.face_tracker.get_face(frame[int(y1):int(y2), int(x1):int(x2)])
+                    params = {'emotion': emotion, 'gender': gender}
+                    active_obj.set_params(params)
 
-                for track in tracks:
-                    annotator = Annotator(im0, line_width=2, pil=not ascii)
-
-                    active_obj = Object(track)
-                    active_obj.frame = frame
-                    id = active_obj.id
-
-                    # find out if object already exists, calculate velocity and copy params
-                    if id in self.all_objs:
-                        ex_obj = self.all_objs[id]
-                        # velocity = difference in position over one frame
-                        active_obj.speed = active_obj.get_distance(ex_obj) / (active_obj.frame - ex_obj.frame)
-                        active_obj.params = ex_obj.params
-                        active_obj.params_changed = ex_obj.params_changed
-
-                    # face tracking
-                    ft_freq = 10    # track every ft_freq frames
-                    if active_obj.class_id == self.get_class_index('person'):
-                        x1, y1, x2, y2 = active_obj.box
-                        if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0 and active_obj.frame % ft_freq == 0:
-                            gender, emotion, reg = self.face_tracker.get_face(im0[int(y1):int(y2), int(x1):int(x2)])
-                            params = {'emotion': emotion, 'gender': gender}
-                            active_obj.set_params(params)
-
-                    label = f'{track.id[:5]}: {self.get_class_name(track.class_id)} {active_obj.params}'
-                    annotator.box_label(track.box, label, color=colors(track.class_id, True))
-                    im0 = annotator.result()
-
-                    self.all_objs[id] = active_obj
-                    curr_objs.add(active_obj)
-
-                # Print time (inference + NMS)
-                # print(f'{s}Done. ({t2 - t1:.3f}s)')
-
-            # Stream results
-            if self.view_img:
-                cv2.imshow('result', im0)
-                cv2.waitKey(1)  # 1 millisecond
+            self.all_objs[id] = active_obj
+            curr_objs.add(active_obj)
 
         self.new_objs = curr_objs - self.__prev_objs
         self.del_objs = self.__prev_objs - curr_objs
