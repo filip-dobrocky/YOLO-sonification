@@ -3,9 +3,12 @@ import synths
 from tracker import Tracker, Object
 import torch
 import argparse
+from threading import Thread, Semaphore
+import time
 
 synth_map = dict()
 buffers = dict()
+sem = Semaphore()
 
 
 def add_synth(synth_map, id, synth):
@@ -35,6 +38,58 @@ def face_params_changed(id, params):
     buffers[id] = buffer
 
 
+def read():
+    while True:
+        tracker.read_video()
+        time.sleep(1 / tracker.video_fps)
+
+
+def process():
+    while True:
+        frame = None
+        if len(tracker.video_buffer):
+            frame = tracker.video_buffer.popleft()
+        else:
+            time.sleep(0.01)
+            continue
+
+        all, new, deleted = tracker.track(frame)
+
+        for o in new:
+            if o.class_id == 0:
+                tracker.all_objs[o.id].params_changed = face_params_changed
+                s = synths.server.add_synth(synths.beeper, add_action='addBefore', fx_bus=fx_bus.bus_id)
+                add_synth(synth_map, o.id, s)
+            else:
+                s = synths.server.add_synth(synths.duster, add_action='addBefore', fx_bus=fx_bus.bus_id)
+                add_synth(synth_map, o.id, s)
+            buffers[o.id] = synths.load_buffer_class(o.class_id)
+            s = synths.server.add_synth(synths.grainer,
+                                        add_action='addBefore', fx_bus=fx_bus.bus_id,
+                                        buffer=buffers[o.id])
+            add_synth(synth_map, o.id, s)
+
+        for o in deleted:
+            for s in synth_map[o.id]:
+                s['gate'] = 0
+            synth_map.pop(o.id)
+
+        for o in all:
+            if o.id in synth_map:
+                for synth in synth_map[o.id]:
+                    if synth.synthdef.name == 'beeper':
+                        synth['freq'] = 20 + 800 * (1 - norm_v_pos(o.pos[1]))
+                        synth['tempo'] = 30 + norm_speed(o.speed) * 100
+                    elif synth.synthdef.name == 'duster':
+                        synth['freq'] = 50 + 5000 * (1 - norm_v_pos(o.pos[1]))
+                        synth['tempo'] = 100 + norm_speed(o.speed) * 100
+                    elif synth.synthdef.name == 'grainer':
+                        synth['speed'] = norm_speed(o.speed)
+                    synth['pan'] = norm_h_pos(o.pos[0]) * 2 - 1
+                    synth['depth'] = (1 - (o.area / tracker.video_area)) * 0.6
+                    synth['level'] = 0.2 + 0.5 * (o.area / tracker.video_area)
+
+
 if __name__ == '__main__':
     print('cuda ' + ('not ' if not torch.cuda.is_available() else '') + 'available' )
 
@@ -42,6 +97,7 @@ if __name__ == '__main__':
     parser.add_argument('--source', type=str, default='0')
     opt = parser.parse_args()
     src = opt.source
+    # src = 'test.mp4'
 
     # src = 'https://www.youtube.com/watch?v=b1LEJCV6kPc'
     # src = 'https://www.youtube.com/watch?v=WJLkXlhE1FM'
@@ -58,44 +114,14 @@ if __name__ == '__main__':
     norm_area = lambda x: x / tracker.video_area
     norm_speed = lambda x: max(0, min(x / 50, 1.0))
 
-    while True:
-        try:
-            all, new, deleted = tracker.track()
+    # read, process, display
+    read_thread = Thread(target=read)
+    process_thread = Thread(target=process)
 
-            for o in new:
-                if o.class_id == 0:
-                    tracker.all_objs[o.id].params_changed = face_params_changed
-                    s = synths.server.add_synth(synths.beeper, add_action='addBefore', fx_bus=fx_bus.bus_id)
-                    add_synth(synth_map, o.id, s)
-                else:
-                    s = synths.server.add_synth(synths.duster, add_action='addBefore', fx_bus=fx_bus.bus_id)
-                    add_synth(synth_map, o.id, s)
-                buffers[o.id] = synths.load_buffer_class(o.class_id)
-                s = synths.server.add_synth(synths.grainer,
-                                            add_action='addBefore', fx_bus=fx_bus.bus_id,
-                                            buffer=buffers[o.id])
-                add_synth(synth_map, o.id, s)
+    read_thread.start()
+    process_thread.start()
 
-            for o in deleted:
-                for s in synth_map[o.id]:
-                    s['gate'] = 0
-                synth_map.pop(o.id)
-
-            for o in all:
-                if o.id in synth_map:
-                    for synth in synth_map[o.id]:
-                        if synth.synthdef.name == 'beeper':
-                            synth['freq'] = 20 + 800 * (1 - norm_v_pos(o.pos[1]))
-                            synth['tempo'] = 30 + norm_speed(o.speed) * 100
-                        elif synth.synthdef.name == 'duster':
-                            synth['freq'] = 50 + 5000 * (1 - norm_v_pos(o.pos[1]))
-                            synth['tempo'] = 100 + norm_speed(o.speed) * 100
-                        elif synth.synthdef.name == 'grainer':
-                            synth['speed'] = norm_speed(o.speed)
-                        synth['pan'] = norm_h_pos(o.pos[0]) * 2 - 1
-                        synth['depth'] = (1 - (o.area / tracker.video_area)) * 0.6
-                        synth['level'] = 0.2 + 0.5 * (o.area / tracker.video_area)
-        except StopIteration:
-            break
+    read_thread.join()
+    process_thread.join()
 
     synths.server.quit()
