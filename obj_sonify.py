@@ -8,7 +8,6 @@ import time
 
 synth_map = dict()
 buffers = dict()
-sem = Semaphore()
 
 
 def add_synth(synth_map, id, synth):
@@ -18,6 +17,7 @@ def add_synth(synth_map, id, synth):
 
 
 def face_params_changed(id, params):
+    # TODO: bug - synth not removed on obj exit
     synth = None
     buffer = None
     for s in synth_map[id]:
@@ -40,20 +40,28 @@ def face_params_changed(id, params):
 
 def read():
     while True:
-        tracker.read_video()
-        time.sleep(1 / tracker.video_fps)
+        available = tracker.read_video()
+        if not available:
+            time.sleep(0.01)
+
+
+def display():
+    while True:
+        available = tracker.show_video()
+        if not available:
+            time.sleep(0.01)
+        fps = tracker.video_fps
+        time.sleep(1 / fps if fps else 0.002)
 
 
 def process():
     while True:
-        frame = None
-        if len(tracker.video_buffer):
-            frame = tracker.video_buffer.popleft()
-        else:
+        result = tracker.track()
+        if not result:
             time.sleep(0.01)
             continue
 
-        all, new, deleted = tracker.track(frame)
+        all, new, deleted = result
 
         for o in new:
             if o.class_id == 0:
@@ -97,14 +105,15 @@ if __name__ == '__main__':
     parser.add_argument('--source', type=str, default='0')
     opt = parser.parse_args()
     src = opt.source
-    # src = 'test.mp4'
 
+    # src = 'test.mp4'
     # src = 'https://www.youtube.com/watch?v=b1LEJCV6kPc'
     # src = 'https://www.youtube.com/watch?v=WJLkXlhE1FM'
     # src = 'https://www.youtube.com/watch?v=HOASHDryAwU'
     # src = 'https://www.youtube.com/watch?v=gu5p_TdU9vw'
 
     tracker = Tracker(source=src)
+    tracker.classes = (tracker.get_class_index('person'))
 
     fx_bus = synths.server.add_bus_group(2, 'audio')
     rev = synths.server.add_synth(synths.reverb, in_bus=fx_bus.bus_id)
@@ -117,11 +126,14 @@ if __name__ == '__main__':
     # read, process, display
     read_thread = Thread(target=read)
     process_thread = Thread(target=process)
+    display_thread = Thread(target=display)
 
     read_thread.start()
     process_thread.start()
+    display_thread.start()
 
     read_thread.join()
     process_thread.join()
+    display_thread.join()
 
     synths.server.quit()
