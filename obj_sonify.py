@@ -3,8 +3,10 @@ import synths
 from tracker import Tracker, Object
 import torch
 import argparse
-from threading import Thread, Semaphore
+from threading import Thread
 import time
+
+FPS_TOLERANCE = 0
 
 synth_map = dict()
 buffers = dict()
@@ -20,6 +22,10 @@ def face_params_changed(id, params):
     # TODO: bug - synth not removed on obj exit
     synth = None
     buffer = None
+
+    if id not in synth_map:
+        return
+
     for s in synth_map[id]:
         if s.synthdef.name == 'grainer':
             synth = s
@@ -34,13 +40,39 @@ def face_params_changed(id, params):
                                             add_action='addBefore', fx_bus=fx_bus.bus_id,
                                             buffer=buffer)
         add_synth(synth_map, id, new_synth)
-    synth_map[id].remove(synth)
-    buffers[id] = buffer
+
+        synth_map[id].remove(synth)
+        buffers[id] = buffer
+
+
+def change_params(synth, object):
+    if synth.synthdef.name == 'beeper':
+        synth['freq'] = 20 + 800 * (1 - norm_v_pos(object.pos[1]))
+        synth['tempo'] = 30 + norm_speed(object.speed) * 100
+    elif synth.synthdef.name == 'duster':
+        synth['freq'] = 50 + 5000 * (1 - norm_v_pos(object.pos[1]))
+        synth['tempo'] = 100 + norm_speed(object.speed) * 100
+    elif synth.synthdef.name == 'grainer':
+        synth['speed'] = norm_speed(object.speed)
+    synth['pan'] = norm_h_pos(object.pos[0]) * 2 - 1
+    synth['depth'] = (1 - (object.area / tracker.video_area)) * 0.6
+    synth['level'] = 0.2 + 0.5 * (object.area / tracker.video_area)
+    print('params changed')
+
+
+def update(synth, object):
+    global params_thread
+    if params_thread is not None and params_thread.is_alive():
+        return
+    params_thread = Thread(target=change_params, args=(synth, object), daemon=True)
+    params_thread.start()
 
 
 def read():
     while True:
         available = tracker.read_video()
+        fps = tracker.video_fps
+        time.sleep(1 / (2 * (fps - FPS_TOLERANCE)))
         if not available:
             time.sleep(0.01)
 
@@ -57,7 +89,7 @@ def display():
 def process():
     while True:
         result = tracker.track()
-        if not result:
+        if result is None:
             time.sleep(0.01)
             continue
 
@@ -85,35 +117,26 @@ def process():
         for o in all:
             if o.id in synth_map:
                 for synth in synth_map[o.id]:
-                    if synth.synthdef.name == 'beeper':
-                        synth['freq'] = 20 + 800 * (1 - norm_v_pos(o.pos[1]))
-                        synth['tempo'] = 30 + norm_speed(o.speed) * 100
-                    elif synth.synthdef.name == 'duster':
-                        synth['freq'] = 50 + 5000 * (1 - norm_v_pos(o.pos[1]))
-                        synth['tempo'] = 100 + norm_speed(o.speed) * 100
-                    elif synth.synthdef.name == 'grainer':
-                        synth['speed'] = norm_speed(o.speed)
-                    synth['pan'] = norm_h_pos(o.pos[0]) * 2 - 1
-                    synth['depth'] = (1 - (o.area / tracker.video_area)) * 0.6
-                    synth['level'] = 0.2 + 0.5 * (o.area / tracker.video_area)
+                    update(synth, o)
 
 
 if __name__ == '__main__':
-    print('cuda ' + ('not ' if not torch.cuda.is_available() else '') + 'available' )
+    print('cuda ' + ('not ' if not torch.cuda.is_available() else '') + 'available')
 
     parser = argparse.ArgumentParser(description='Video sonification based on object tracking')
     parser.add_argument('--source', type=str, default='0')
     opt = parser.parse_args()
     src = opt.source
 
-    # src = 'test.mp4'
+    # src = 'test2.mp4'
     # src = 'https://www.youtube.com/watch?v=b1LEJCV6kPc'
     # src = 'https://www.youtube.com/watch?v=WJLkXlhE1FM'
     # src = 'https://www.youtube.com/watch?v=HOASHDryAwU'
     # src = 'https://www.youtube.com/watch?v=gu5p_TdU9vw'
 
     tracker = Tracker(source=src)
-    tracker.classes = (tracker.get_class_index('person'))
+    # tracker.classes = (tracker.get_class_index('car'))
+    tracker.classes = range(1, 80)
 
     fx_bus = synths.server.add_bus_group(2, 'audio')
     rev = synths.server.add_synth(synths.reverb, in_bus=fx_bus.bus_id)
@@ -127,6 +150,7 @@ if __name__ == '__main__':
     read_thread = Thread(target=read)
     process_thread = Thread(target=process)
     display_thread = Thread(target=display)
+    params_thread = None
 
     read_thread.start()
     process_thread.start()

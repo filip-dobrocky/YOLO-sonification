@@ -18,7 +18,7 @@ import numpy as np
 import face_tracking as ft
 
 # detection parameters
-CONF_THRESHOLD: float = 0.6
+CONF_THRESHOLD: float = 0.5
 IOU_THRESHOLD: float = 0.4
 IMAGE_SIZE: int = 640
 
@@ -27,7 +27,7 @@ DISTANCE_THRESHOLD_BBOX: float = 0.85
 DISTANCE_THRESHOLD_CENTROID: int = 30
 MAX_DISTANCE: int = 10000
 
-BUF_LEN = 5
+BUF_LEN = 3
 FACE_PERIOD = 5
 
 
@@ -100,7 +100,7 @@ class Object:
 class Tracker:
     def __init__(self, source='0'):
         self.tracks = None
-        self.model = YOLO('./yolov7-tiny.pt')
+        self.model = YOLO('./yolov7-e6e.pt')
         self.names = self.model.model.names
         self.classes = None
 
@@ -109,14 +109,14 @@ class Tracker:
             else Video(input_path=source)
         self.video_iter = iter(self.video)
         self.video_buffer = deque()
+        self.process_queue = deque(maxlen=BUF_LEN)
         self.frame_counter = 0
         self.last_frame_num = 0
-        self.buf_read = 0
 
         self.tracker = norfair.Tracker(
             distance_function='iou',
             distance_threshold=DISTANCE_THRESHOLD_BBOX,
-            hit_counter_max=3
+            hit_counter_max=6
         )
 
         self.__prev_objs = set()
@@ -158,36 +158,34 @@ class Tracker:
         try:
             frame = next(self.video_iter)
             self.video_buffer.append((frame, self.frame_counter))
+            self.process_queue.append((frame, self.frame_counter))
             self.frame_counter += 1
         except StopIteration:
             pass
         return True
 
     def show_video(self):
-        buf_len = len(self.video_buffer)
-        if not buf_len:
+        if len(self.video_buffer) < BUF_LEN:
             return False
         frame = self.video_buffer.popleft()[0]
-        norfair.draw_boxes(frame, self.tracks, draw_labels=True)
+        norfair.draw_boxes(frame, self.tracks, draw_labels=True, draw_ids=True)
         self.video.show(frame)
-        self.buf_read -= 1
         return True
 
     def track(self):
-        if len(self.video_buffer):
-            self.buf_read = max(0, min(len(self.video_buffer) - 1, self.buf_read))
-            frame = self.video_buffer[self.buf_read][0]
-            frame_num = self.video_buffer[self.buf_read][1]
+        if len(self.process_queue):
+            tmp = self.process_queue.popleft()
+            frame = tmp[0]
+            frame_num = tmp[1]
         else:
             return None
 
         tracker_period = frame_num - self.last_frame_num
         self.last_frame_num = frame_num
 
-        print(self.buf_read)
+        print(tracker_period)
 
         if tracker_period <= 0:
-            self.buf_read += 1
             return None
 
         # inference
