@@ -17,17 +17,7 @@ import numpy as np
 
 import face_tracking as ft
 
-# detection parameters
-CONF_THRESHOLD: float = 0.5
-IOU_THRESHOLD: float = 0.4
-IMAGE_SIZE: int = 640
 
-# tracking parameters
-DISTANCE_THRESHOLD_BBOX: float = 0.85
-DISTANCE_THRESHOLD_CENTROID: int = 30
-MAX_DISTANCE: int = 10000
-
-BUF_LEN = 3
 FACE_PERIOD = 5
 
 
@@ -75,6 +65,14 @@ class Object:
         return [int(self.box[0] + self.box[2]) / 2, int(self.box[1] + self.box[3]) / 2]
 
     @property
+    def x(self):
+        return int(self.box[0] + self.box[2]) / 2
+
+    @property
+    def y(self):
+        return int(self.box[1] + self.box[3]) / 2
+
+    @property
     def area(self):
         return (self.box[2] - self.box[0]) * (self.box[3] - self.box[1])
 
@@ -98,7 +96,18 @@ class Object:
 
 
 class Tracker:
-    def __init__(self, source='0'):
+    def __init__(self, source='0',
+                 conf_threshold: float = 0.6,
+                 iou_threshold: float = 0.5,
+                 image_size: int = 640,
+                 dist_threshold: float = 0.85,
+                 buf_len: int = 3):
+
+        self.buf_len = buf_len
+        self.image_size = image_size
+        self.iou_threshold = iou_threshold
+        self.conf_threshold = conf_threshold
+
         self.tracks = None
         self.model = YOLO('./yolov7-e6e.pt')
         self.names = self.model.model.names
@@ -109,13 +118,13 @@ class Tracker:
             else Video(input_path=source)
         self.video_iter = iter(self.video)
         self.video_buffer = deque()
-        self.process_queue = deque(maxlen=BUF_LEN)
+        self.process_queue = deque(maxlen=self.buf_len)
         self.frame_counter = 0
-        self.last_frame_num = 0
+        self.last_frame_num = -1
 
         self.tracker = norfair.Tracker(
             distance_function='iou',
-            distance_threshold=DISTANCE_THRESHOLD_BBOX,
+            distance_threshold=dist_threshold,
             hit_counter_max=6
         )
 
@@ -153,7 +162,7 @@ class Tracker:
         return self.names[id]
 
     def read_video(self):
-        if len(self.video_buffer) >= BUF_LEN:
+        if len(self.video_buffer) >= self.buf_len:
             return False
         try:
             frame = next(self.video_iter)
@@ -165,7 +174,7 @@ class Tracker:
         return True
 
     def show_video(self):
-        if len(self.video_buffer) < BUF_LEN:
+        if len(self.video_buffer) < self.buf_len:
             return False
         frame = self.video_buffer.popleft()[0]
         norfair.draw_boxes(frame, self.tracks, draw_labels=True, draw_ids=True)
@@ -185,19 +194,16 @@ class Tracker:
 
         print(tracker_period)
 
-        if tracker_period <= 0:
-            return None
-
         # inference
         yolo_detections = self.model(frame,
-                                     conf_threshold=CONF_THRESHOLD,
-                                     iou_threshold=IOU_THRESHOLD,
-                                     image_size=IMAGE_SIZE,
+                                     conf_threshold=self.conf_threshold,
+                                     iou_threshold=self.iou_threshold,
+                                     image_size=self.image_size,
                                      classes=self.classes)
         detections = yolo_detections_to_norfair_detections(yolo_detections, track_points='bbox')
 
         curr_objs = set()
-        self.tracks = self.tracker.update(detections)
+        self.tracks = self.tracker.update(detections, period=tracker_period)
 
         for track in self.tracks:
             active_obj = Object(track)

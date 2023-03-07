@@ -1,12 +1,13 @@
 import supriya
 import synths
 from tracker import Tracker, Object
+from mapping import SynthMapping, ParameterMapping
 import torch
 import argparse
 from threading import Thread
 import time
 
-FPS_TOLERANCE = 0
+FPS_SMOOTHNESS = 3
 
 synth_map = dict()
 buffers = dict()
@@ -19,51 +20,34 @@ def add_synth(synth_map, id, synth):
 
 
 def face_params_changed(id, params):
-    # TODO: bug - synth not removed on obj exit
-    synth = None
-    buffer = None
-
-    if id not in synth_map:
-        return
-
-    for s in synth_map[id]:
-        if s.synthdef.name == 'grainer':
-            synth = s
-            break
-    if synth is not None:
-        synth['gate'] = 0
-        if params['emotion'] != 'neutral':
-            buffer = synths.load_buffer_emotion(params['gender'], params['emotion'])
-        else:
-            buffer = synths.load_buffer_class(0)
-        new_synth = synths.server.add_synth(synths.grainer,
-                                            add_action='addBefore', fx_bus=fx_bus.bus_id,
-                                            buffer=buffer)
-        add_synth(synth_map, id, new_synth)
-
-        synth_map[id].remove(synth)
-        buffers[id] = buffer
+    # synth = None
+    #
+    # if id not in synth_map:
+    #     return
+    # for s in synth_map[id]:
+    #     if s.synthdef.name == 'grainer':
+    #         synth = s
+    #         break
+    # if synth is None:
+    #     return
+    #
+    # if params['emotion'] != 'neutral':
+    #     buffer = synths.load_buffer_emotion(params['gender'], params['emotion'])
+    # else:
+    #     buffer = synths.load_buffer_class(0)
+    # synth['buffer'] = buffer
+    # if id in buffers:
+    #     buffers[id].free()
+    # buffers[id] = buffer
+    pass
 
 
 def change_params(synth, object):
-    if synth.synthdef.name == 'beeper':
-        synth['freq'] = 20 + 800 * (1 - norm_v_pos(object.pos[1]))
-        synth['tempo'] = 30 + norm_speed(object.speed) * 100
-    elif synth.synthdef.name == 'duster':
-        synth['freq'] = 50 + 5000 * (1 - norm_v_pos(object.pos[1]))
-        synth['tempo'] = 100 + norm_speed(object.speed) * 100
-    elif synth.synthdef.name == 'grainer':
-        synth['speed'] = norm_speed(object.speed)
-    synth['pan'] = norm_h_pos(object.pos[0]) * 2 - 1
-    synth['depth'] = (1 - (object.area / tracker.video_area)) * 0.6
-    synth['level'] = 0.2 + 0.5 * (object.area / tracker.video_area)
-    print('params changed')
+    for m in param_mappings:
+        m.apply(synth, object)
 
 
 def update(synth, object):
-    global params_thread
-    if params_thread is not None and params_thread.is_alive():
-        return
     params_thread = Thread(target=change_params, args=(synth, object), daemon=True)
     params_thread.start()
 
@@ -72,7 +56,7 @@ def read():
     while True:
         available = tracker.read_video()
         fps = tracker.video_fps
-        time.sleep(1 / (2 * (fps - FPS_TOLERANCE)))
+        time.sleep(1 / (FPS_SMOOTHNESS * fps))
         if not available:
             time.sleep(0.01)
 
@@ -96,18 +80,16 @@ def process():
         all, new, deleted = result
 
         for o in new:
-            if o.class_id == 0:
-                tracker.all_objs[o.id].params_changed = face_params_changed
-                s = synths.server.add_synth(synths.beeper, add_action='addBefore', fx_bus=fx_bus.bus_id)
-                add_synth(synth_map, o.id, s)
-            else:
-                s = synths.server.add_synth(synths.duster, add_action='addBefore', fx_bus=fx_bus.bus_id)
-                add_synth(synth_map, o.id, s)
-            buffers[o.id] = synths.load_buffer_class(o.class_id)
-            s = synths.server.add_synth(synths.grainer,
-                                        add_action='addBefore', fx_bus=fx_bus.bus_id,
-                                        buffer=buffers[o.id])
-            add_synth(synth_map, o.id, s)
+            # if o.class_id == 0:
+            #     tracker.all_objs[o.id].params_changed = face_params_changed
+
+            for m in synth_mappings:
+                if o.class_id in m.object_classes:
+                    s = synths.server.add_synth(m.synth_def, add_action='addBefore', fx_bus=fx_bus.bus_id)
+                    if m.synth_def == synths.grainer:
+                        buffers[o.id] = synths.load_buffer_class(o.class_id)
+                        s['buffer'] = buffers[o.id]
+                    add_synth(synth_map, o.id, s)
 
         for o in deleted:
             for s in synth_map[o.id]:
@@ -128,29 +110,46 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     src = opt.source
 
-    # src = 'test2.mp4'
+    # src = 'test.mp4'
     # src = 'https://www.youtube.com/watch?v=b1LEJCV6kPc'
     # src = 'https://www.youtube.com/watch?v=WJLkXlhE1FM'
     # src = 'https://www.youtube.com/watch?v=HOASHDryAwU'
     # src = 'https://www.youtube.com/watch?v=gu5p_TdU9vw'
 
     tracker = Tracker(source=src)
-    # tracker.classes = (tracker.get_class_index('car'))
-    tracker.classes = range(1, 80)
+    # tracker.classes = (tracker.get_class_index('person'))
+    # tracker.classes = range(1, 80)
 
     fx_bus = synths.server.add_bus_group(2, 'audio')
     rev = synths.server.add_synth(synths.reverb, in_bus=fx_bus.bus_id)
 
-    norm_h_pos = lambda x: x / tracker.video_size[0]
-    norm_v_pos = lambda x: x / tracker.video_size[1]
+    norm_x = lambda x: x / tracker.video_size[0]
+    norm_y = lambda x: x / tracker.video_size[1]
     norm_area = lambda x: x / tracker.video_area
     norm_speed = lambda x: max(0, min(x / 50, 1.0))
+
+    synth_mappings = list()
+    param_mappings = list()
+
+    synth_mappings.append(SynthMapping([0], synths.beeper))
+    param_mappings.append(ParameterMapping('beeper', 'freq', 'y', scaling=lambda x: 20+800*(1-norm_y(x))))
+    param_mappings.append(ParameterMapping('beeper', 'tempo', 'speed', scaling=lambda x: 30+100*norm_speed(x)))
+
+    synth_mappings.append(SynthMapping(range(1, 80), synths.duster))
+    param_mappings.append(ParameterMapping('duster', 'freq', 'y', scaling=lambda x: 50+5000*(1-norm_y(x))))
+    param_mappings.append(ParameterMapping('duster', 'tempo', 'speed', scaling=lambda x: 100+100*norm_speed(x)))
+
+    synth_mappings.append(SynthMapping(range(0, 80), synths.grainer))
+    param_mappings.append(ParameterMapping('grainer', 'speed', 'speed', scaling=norm_speed))
+
+    param_mappings.append(ParameterMapping(None, 'pan', 'x', scaling=lambda x: norm_x(x)*2-1))
+    param_mappings.append(ParameterMapping(None, 'depth', 'area', scaling=lambda x: 0.6*(1-x/tracker.video_area)))
+    param_mappings.append(ParameterMapping(None, 'level', 'area', scaling=lambda x: 0.2+0.5*(x/tracker.video_area)))
 
     # read, process, display
     read_thread = Thread(target=read)
     process_thread = Thread(target=process)
     display_thread = Thread(target=display)
-    params_thread = None
 
     read_thread.start()
     process_thread.start()
