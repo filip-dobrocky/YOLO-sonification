@@ -102,11 +102,9 @@ def reverb(in_bus, out_bus=0):
     Out.ar(out_bus, buf)
 
 
-server.add_synthdef(reverb)
-server.add_synthdef(duster)
-server.add_synthdef(beeper)
-server.add_synthdef(grainer)
-server.add_synthdef(player)
+synthdefs = [reverb, duster, beeper, grainer, player]
+for s in synthdefs:
+    server.add_synthdef(s)
 
 
 if __name__ == '__main__':

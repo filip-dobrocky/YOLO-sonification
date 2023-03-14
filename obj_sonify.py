@@ -1,13 +1,15 @@
 import supriya
 import synths
 from tracker import Tracker, Object
-from mapping import SynthMapping, ParameterMapping
+import mapping
+from mapping import SynthMapping, ParameterMapping, mapping_applies, synth_mappings, param_mappings
+
 import torch
 import argparse
 from threading import Thread
 import time
 
-FPS_SMOOTHNESS = 3
+FPS_SMOOTHNESS = 1.2
 
 synth_map = dict()
 buffers = dict()
@@ -44,7 +46,8 @@ def face_params_changed(id, params):
 
 def change_params(synth, object):
     for m in param_mappings:
-        m.apply(synth, object)
+        if mapping_applies(m, synth):
+            m.apply(synth, object)
 
 
 def update(synth, object):
@@ -85,8 +88,8 @@ def process():
 
             for m in synth_mappings:
                 if o.class_id in m.object_classes:
-                    s = synths.server.add_synth(m.synth_def, add_action='addBefore', fx_bus=fx_bus.bus_id)
-                    if m.synth_def == synths.grainer:
+                    s = synths.server.add_synth(m.synthdef, add_action='addBefore', fx_bus=fx_bus.bus_id)
+                    if m.synthdef == synths.grainer:
                         buffers[o.id] = synths.load_buffer_class(o.class_id)
                         s['buffer'] = buffers[o.id]
                     add_synth(synth_map, o.id, s)
@@ -110,7 +113,7 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     src = opt.source
 
-    # src = 'test.mp4'
+    src = 'test.mp4'
     # src = 'https://www.youtube.com/watch?v=b1LEJCV6kPc'
     # src = 'https://www.youtube.com/watch?v=WJLkXlhE1FM'
     # src = 'https://www.youtube.com/watch?v=HOASHDryAwU'
@@ -123,26 +126,25 @@ if __name__ == '__main__':
     fx_bus = synths.server.add_bus_group(2, 'audio')
     rev = synths.server.add_synth(synths.reverb, in_bus=fx_bus.bus_id)
 
-    norm_x = lambda x: x / tracker.video_size[0]
-    norm_y = lambda x: x / tracker.video_size[1]
-    norm_area = lambda x: x / tracker.video_area
-    norm_speed = lambda x: max(0, min(x / 50, 1.0))
+    mapping.norm_x = lambda x: x / tracker.video_size[0]
+    mapping.norm_y = lambda x: x / tracker.video_size[1]
+    mapping.norm_area = lambda x: x / tracker.video_area
 
-    synth_mappings = list()
-    param_mappings = list()
+
 
     synth_mappings.append(SynthMapping([0], synths.beeper))
-    param_mappings.append(ParameterMapping('beeper', 'freq', 'y', scaling=lambda x: 20+800*(1-norm_y(x))))
-    param_mappings.append(ParameterMapping('beeper', 'tempo', 'speed', scaling=lambda x: 30+100*norm_speed(x)))
+    param_mappings.append(ParameterMapping(synths.beeper, 'freq', 'y', scaling=lambda x: 20+800*(1-mapping.norm_y(x))))
+    param_mappings.append(ParameterMapping(synths.beeper,
+                                           'tempo', 'speed', scaling=lambda x: 30+100*mapping.norm_speed(x)))
 
     synth_mappings.append(SynthMapping(range(1, 80), synths.duster))
-    param_mappings.append(ParameterMapping('duster', 'freq', 'y', scaling=lambda x: 50+5000*(1-norm_y(x))))
-    param_mappings.append(ParameterMapping('duster', 'tempo', 'speed', scaling=lambda x: 100+100*norm_speed(x)))
+    param_mappings.append(ParameterMapping(synths.duster, 'freq', 'y', scaling=lambda x: 50+5000*(1-mapping.norm_y(x))))
+    param_mappings.append(ParameterMapping(synths.duster, 'tempo', 'speed', scaling=lambda x: 100+100*mapping.norm_speed(x)))
 
     synth_mappings.append(SynthMapping(range(0, 80), synths.grainer))
-    param_mappings.append(ParameterMapping('grainer', 'speed', 'speed', scaling=norm_speed))
+    param_mappings.append(ParameterMapping(synths.grainer, 'speed', 'speed', scaling=mapping.norm_speed))
 
-    param_mappings.append(ParameterMapping(None, 'pan', 'x', scaling=lambda x: norm_x(x)*2-1))
+    param_mappings.append(ParameterMapping(None, 'pan', 'x', scaling=lambda x: mapping.norm_x(x)*2-1))
     param_mappings.append(ParameterMapping(None, 'depth', 'area', scaling=lambda x: 0.6*(1-x/tracker.video_area)))
     param_mappings.append(ParameterMapping(None, 'level', 'area', scaling=lambda x: 0.2+0.5*(x/tracker.video_area)))
 
