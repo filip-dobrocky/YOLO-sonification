@@ -27,7 +27,7 @@ class ParameterMapping:
     def __init__(self,
                  synthdef: supriya.SynthDef,
                  synth_attr: str,
-                 obj_attr: str,
+                 obj_attr: str = None,
                  scaling: Callable[[float], float] = (lambda x: x)):
         self.synthdef = synthdef
         self.synth_attr = synth_attr
@@ -36,10 +36,8 @@ class ParameterMapping:
 
     def __eq__(self, other):
         if isinstance(other, ParameterMapping):
-            if self.synthdef is None:
-                return other.synthdef is None and self.synth_attr == other.synth_attr
-            elif self.synthdef is None:
-                return other.synthdef is None and self.synth_attr == other.synth_attr
+            if self.synthdef is None or other.synthdef is None:
+                return self.synthdef is other.synthdef and self.synth_attr == other.synth_attr
             else:
                 return self.synthdef.name == other.synthdef.name and self.synth_attr == other.synth_attr
         return False
@@ -115,10 +113,9 @@ def modify_parameter_mapping(synthdef: supriya.SynthDef, synth_attr: str, obj_at
                              scaling: Callable[[float], float] = None):
     index = None
     for i, m in enumerate(param_mappings):
-        if (synthdef is None and m.synthdef is None) or (synthdef is not None and m.synthdef.name == synthdef.name):
-            if m.synth_attr == synth_attr:
-                index = i
-                break
+        if m == ParameterMapping(synthdef, synth_attr):
+            index = i
+            break
     if index is not None:
         if obj_attr is not None:
             param_mappings[index].obj_attr = obj_attr

@@ -40,6 +40,8 @@ class YOLO:
         self.model.iou = iou_threshold
         if classes is not None:
             self.model.classes = classes
+        else:
+            self.model.classes = list(range(80))
         detections = self.model(img, size=image_size)
         return detections
 

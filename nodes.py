@@ -1,10 +1,14 @@
 from Qt import QtCore, QtWidgets
 from NodeGraphQt import BaseNode, NodeBaseWidget
+from text_completer import CompleterTextEdit
 
 import math
 
 import synths
 import mapping
+import pitch_quantization
+
+tracker = None
 
 
 class SynthNode(BaseNode):
@@ -63,7 +67,6 @@ class ClassesSlider(QtWidgets.QWidget):
         self.endSlider.setStyleSheet(slider_style)
         self.label = QtWidgets.QLabel()
         self.label.setAlignment(QtCore.Qt.AlignCenter)
-        # self.label.setStyleSheet('color: lightgrey')
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -106,9 +109,24 @@ class ClassesSliderWrapper(NodeBaseWidget):
         return widget.startSlider.value(), widget.endSlider.value()
 
 
+class ClassesTextWrapper(NodeBaseWidget):
+    def __init__(self, parent=None):
+        super(ClassesTextWrapper, self).__init__(parent)
+        self.set_name('classes_text')
+        class_names = tracker.names if tracker is not None else []
+        widget = CompleterTextEdit(keywords=class_names, placeholderText='Class Names', maximumHeight=120)
+        widget.textChanged.connect(self.on_value_changed)
+        self.set_custom_widget(widget)
+
+    def set_value(self, text):
+        self.get_custom_widget().setPlainText(text)
+
+    def get_value(self):
+        return self.get_custom_widget().toPlainText()
+
+
 class ClassesSpecifierNode(BaseNode):
     __identifier__ = 'nodes.classes'
-    NODE_NAME = 'Object Classes'
 
     def __init__(self):
         super(ClassesSpecifierNode, self).__init__()
@@ -120,6 +138,8 @@ class ClassesSpecifierNode(BaseNode):
 
 
 class ClassesRangeSpecifierNode(ClassesSpecifierNode):
+    NODE_NAME = 'Classes Range'
+
     def __init__(self):
         super(ClassesRangeSpecifierNode, self).__init__()
 
@@ -130,6 +150,29 @@ class ClassesRangeSpecifierNode(ClassesSpecifierNode):
     def classes(self):
         start, stop = self.get_property('classes_range')
         return range(start, stop + 1)
+
+
+class ClassesTextSpecifierNode(ClassesSpecifierNode):
+    NODE_NAME = 'Classes Text'
+
+    def __init__(self):
+        super(ClassesTextSpecifierNode, self).__init__()
+        node_widget = ClassesTextWrapper(self.view)
+        self.add_custom_widget(node_widget, tab='Custom')
+
+    @property
+    def classes(self):
+        text = self.get_property('classes_text')
+        names = text.split(',')
+        all_names = [x.lower().replace(' ', '') for x in tracker.names]
+        classes = []
+        for n in names:
+            try:
+                i = all_names.index(n.lower().replace(' ', ''))
+                classes.append(i)
+            except ValueError:
+                print('Invalid name', n)
+        return classes
 
 
 class ObjectParameterNode(BaseNode):
@@ -178,13 +221,11 @@ class ObjectParameterNode(BaseNode):
 
 class ParameterScalingNode(BaseNode):
     __identifier__ = 'nodes.parameters'
-    NODE_NAME = 'Parameter Scaling'
 
     def __init__(self):
         super(ParameterScalingNode, self).__init__()
         self.add_input('scaling')
         self.add_output('scaling')
-        self.add_text_input('function_str', 'f(x)')
         self.function = lambda x: x
 
     @property
@@ -214,6 +255,36 @@ class ParameterScalingNode(BaseNode):
         return parameters
 
 
+class TextParameterScalingNode(ParameterScalingNode):
+    NODE_NAME = 'Parameter Scaling'
+
+    def __init__(self):
+        super(TextParameterScalingNode, self).__init__()
+        self.add_text_input('function_str', 'f(x)')
+
+
+class PitchQuantizerNode(ParameterScalingNode):
+    NODE_NAME = 'Pitch Quantizer'
+
+    def __init__(self):
+        super(PitchQuantizerNode, self).__init__()
+        self.add_text_input('ref_f', 'A4', '440')
+        self.add_combo_menu('root', 'Root', pitch_quantization.note_names)
+        self.add_combo_menu('scale', 'Scale', pitch_quantization.scale_names)
+        self.quantizer = None
+        self.update_quantizer()
+
+    def update_quantizer(self):
+        root = self.get_property('root')
+        scale = self.get_property('scale')
+        try:
+            ref_f = float(str(self.get_property('ref_f')))
+        except ValueError:
+            ref_f = 440
+        self.quantizer = pitch_quantization.Quantizer(root, scale, ref_f)
+        self.function = self.quantizer.snap
+
+
 def parse_function(string):
     try:
         if 'x' not in string:
@@ -228,25 +299,29 @@ def parse_function(string):
 
 
 def property_changed(node, name, value):
-    if isinstance(node, ParameterScalingNode):
+    if isinstance(node, TextParameterScalingNode):
         if name == 'function_str':
             node.function = parse_function(value)
-            for n in node.connected_param_nodes:
-                for synth, params in n.connected_parameters.items():
-                    for p in params:
-                        mapping.modify_parameter_mapping(synth, p, scaling=n.scaling)
+    elif isinstance(node, PitchQuantizerNode):
+        node.update_quantizer()
     elif isinstance(node, ClassesSpecifierNode):
-        if name == 'classes_range':
+        if name in ['classes_range', 'classes_text']:
             port = node.get_output('classes')
             for i in node.connected_output_nodes()[port]:
                 if isinstance(i, SynthNode):
                     mapping.remove_synth_mapping(i.synthdef)
-                    mapping.add_synth_mapping(node.classes, i.synthdef)
+                    if len(classes := node.classes):
+                        mapping.add_synth_mapping(classes, i.synthdef)
     elif isinstance(node, ObjectParameterNode):
         if name == 'parameter':
             for synth, params in node.connected_parameters.items():
                 for p in params:
                     mapping.modify_parameter_mapping(synth, p, obj_attr=value)
+    if isinstance(node, ParameterScalingNode):
+        for n in node.connected_param_nodes:
+            for synth, params in n.connected_parameters.items():
+                for p in params:
+                    mapping.modify_parameter_mapping(synth, p, scaling=n.scaling)
 
 
 def port_connected(input, output):
@@ -277,7 +352,10 @@ def port_connected(input, output):
                     for p in params:
                         mapping.modify_parameter_mapping(synth, p, scaling=n.scaling)
             return
-    input.disconnect_from(output, emit=False)
+
+    input.node().graph.blockSignals(True)
+    input.disconnect_from(output)
+    input.node().graph.blockSignals(False)
 
 
 def port_disconnected(input, output):

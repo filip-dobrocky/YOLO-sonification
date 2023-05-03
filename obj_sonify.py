@@ -3,22 +3,37 @@ import synths
 from tracker import Tracker, Object
 import mapping
 from mapping import SynthMapping, ParameterMapping, mapping_applies, synth_mappings, param_mappings
+import gui
+
 
 import torch
 import argparse
 from threading import Thread
 import time
+import logging
 
 FPS_SMOOTHNESS = 1.2
 
 synth_map = dict()
 buffers = dict()
 
+logging.disable(logging.CRITICAL)
 
-def add_synth(synth_map, id, synth):
+threads_running = True
+
+
+def add_synth(synth_map, id, class_id, synthdef):
+    s = synths.server.add_synth(synthdef, add_action='addBefore', fx_bus=fx_bus.bus_id)
+    if synthdef == synths.grainer:
+        buffers[id] = synths.load_buffer_class(class_id)
+        s['buffer'] = buffers[id]
+    if synthdef == synths.player:
+        buffers[id] = synths.load_buffer_class(class_id)
+        s['buffer'] = buffers[id]
+        s['sample_rate'] = buffers[id].sample_rate
     if id not in synth_map:
         synth_map[id] = []
-    synth_map[id].append(synth)
+    synth_map[id].append(s)
 
 
 def face_params_changed(id, params):
@@ -56,25 +71,31 @@ def update(synth, object):
 
 
 def read():
-    while True:
-        available = tracker.read_video()
-        fps = tracker.video_fps
-        time.sleep(1 / (FPS_SMOOTHNESS * fps))
+    while threads_running:
+        available = tracker.running and tracker.read_video()
         if not available:
             time.sleep(0.01)
+            continue
+        fps = tracker.video_fps
+        time.sleep(1 / (FPS_SMOOTHNESS * fps) if fps > 0 else 0.002)
 
 
 def display():
-    while True:
-        available = tracker.show_video()
+    while threads_running:
+        available = tracker.running and tracker.show_video()
         if not available:
             time.sleep(0.01)
+            continue
         fps = tracker.video_fps
-        time.sleep(1 / fps if fps else 0.002)
+        time.sleep(1 / fps if fps > 0 else 0.002)
 
 
 def process():
-    while True:
+    while threads_running:
+        if not tracker.running:
+            time.sleep(0.01)
+            continue
+
         result = tracker.track()
         if result is None:
             time.sleep(0.01)
@@ -88,21 +109,28 @@ def process():
 
             for m in synth_mappings:
                 if o.class_id in m.object_classes:
-                    s = synths.server.add_synth(m.synthdef, add_action='addBefore', fx_bus=fx_bus.bus_id)
-                    if m.synthdef == synths.grainer:
-                        buffers[o.id] = synths.load_buffer_class(o.class_id)
-                        s['buffer'] = buffers[o.id]
-                    add_synth(synth_map, o.id, s)
+                    add_synth(synth_map, o.id, o.class_id, m.synthdef)
 
         for o in deleted:
+            if o.id not in synth_map:
+                break
             for s in synth_map[o.id]:
                 s['gate'] = 0
             synth_map.pop(o.id)
 
         for o in all:
             if o.id in synth_map:
-                for synth in synth_map[o.id]:
-                    update(synth, o)
+                for s in synth_map[o.id].copy():
+                    if any([o.class_id in m.object_classes and m.synthdef == s.synthdef for m in synth_mappings]):
+                        update(s, o)
+                    else:
+                        s['gate'] = 0
+                        synth_map[o.id].remove(s)
+
+            for m in synth_mappings:
+                if o.class_id in m.object_classes:
+                    if o.id not in synth_map or not any([s.synthdef.name == m.synthdef.name for s in synth_map[o.id]]):
+                        add_synth(synth_map, o.id, o.class_id, m.synthdef)
 
 
 if __name__ == '__main__':
@@ -113,13 +141,13 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     src = opt.source
 
-    src = 'test.mp4'
+    # src = 'test.mp4'
     # src = 'https://www.youtube.com/watch?v=b1LEJCV6kPc'
     # src = 'https://www.youtube.com/watch?v=WJLkXlhE1FM'
     # src = 'https://www.youtube.com/watch?v=HOASHDryAwU'
     # src = 'https://www.youtube.com/watch?v=gu5p_TdU9vw'
 
-    tracker = Tracker(source=src)
+    tracker = Tracker()
     # tracker.classes = (tracker.get_class_index('person'))
     # tracker.classes = range(1, 80)
 
@@ -130,24 +158,6 @@ if __name__ == '__main__':
     mapping.norm_y = lambda x: x / tracker.video_size[1]
     mapping.norm_area = lambda x: x / tracker.video_area
 
-
-
-    synth_mappings.append(SynthMapping([0], synths.beeper))
-    param_mappings.append(ParameterMapping(synths.beeper, 'freq', 'y', scaling=lambda x: 20+800*(1-mapping.norm_y(x))))
-    param_mappings.append(ParameterMapping(synths.beeper,
-                                           'tempo', 'speed', scaling=lambda x: 30+100*mapping.norm_speed(x)))
-
-    synth_mappings.append(SynthMapping(range(1, 80), synths.duster))
-    param_mappings.append(ParameterMapping(synths.duster, 'freq', 'y', scaling=lambda x: 50+5000*(1-mapping.norm_y(x))))
-    param_mappings.append(ParameterMapping(synths.duster, 'tempo', 'speed', scaling=lambda x: 100+100*mapping.norm_speed(x)))
-
-    synth_mappings.append(SynthMapping(range(0, 80), synths.grainer))
-    param_mappings.append(ParameterMapping(synths.grainer, 'speed', 'speed', scaling=mapping.norm_speed))
-
-    param_mappings.append(ParameterMapping(None, 'pan', 'x', scaling=lambda x: mapping.norm_x(x)*2-1))
-    param_mappings.append(ParameterMapping(None, 'depth', 'area', scaling=lambda x: 0.6*(1-x/tracker.video_area)))
-    param_mappings.append(ParameterMapping(None, 'level', 'area', scaling=lambda x: 0.2+0.5*(x/tracker.video_area)))
-
     # read, process, display
     read_thread = Thread(target=read)
     process_thread = Thread(target=process)
@@ -157,8 +167,9 @@ if __name__ == '__main__':
     process_thread.start()
     display_thread.start()
 
-    read_thread.join()
-    process_thread.join()
-    display_thread.join()
+    gui.tracker = tracker
+    gui.run()
+
+    threads_running = False
 
     synths.server.quit()

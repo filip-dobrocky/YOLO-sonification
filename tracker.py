@@ -29,6 +29,10 @@ def analyze_face(obj, frame):
         obj.set_params(params)
 
 
+def get_tracker():
+    return tracker
+
+
 class Object:
     def __init__(self, o: TrackedObject):
         self.id = o.global_id
@@ -96,7 +100,15 @@ class Object:
 
 
 class Tracker:
-    def __init__(self, source='0',
+    running = False
+    video = None
+    video_iter = None
+    video_buffer = None
+    process_queue = None
+    frame_counter = 0
+    last_frame_num = -1
+
+    def __init__(self, source=None,
                  conf_threshold: float = 0.6,
                  iou_threshold: float = 0.5,
                  image_size: int = 640,
@@ -113,14 +125,8 @@ class Tracker:
         self.names = self.model.model.names
         self.classes = None
 
-        # TODO: youtube download
-        self.video = Video(camera=int(source)) if source.isnumeric() \
-            else Video(input_path=source)
-        self.video_iter = iter(self.video)
-        self.video_buffer = deque()
-        self.process_queue = deque(maxlen=self.buf_len)
-        self.frame_counter = 0
-        self.last_frame_num = -1
+        if source is not None:
+            self.load_video(source)
 
         self.tracker = norfair.Tracker(
             distance_function='iou',
@@ -144,6 +150,8 @@ class Tracker:
 
     @property
     def video_fps(self):
+        if self.video is None:
+            return 0
         cap = self.video.video_capture
         fps = 0
         if cap.isOpened():
@@ -151,9 +159,23 @@ class Tracker:
         return fps
 
     @property
+    def video_frames(self):
+        if self.video is None:
+            return 0
+        cap = self.video.video_capture
+        frames = 0
+        if cap.isOpened():
+            frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        return frames
+
+    @property
     def video_area(self):
         size = self.video_size
         return size[0] * size[1]
+
+    @property
+    def video_progress(self):
+        return (self.frame_counter / self.video_frames) * 100
 
     def get_class_index(self, name):
         return self.names.index(name)
@@ -161,8 +183,33 @@ class Tracker:
     def get_class_name(self, id):
         return self.names[id]
 
+    def load_video(self, source):
+        # TODO: youtube download
+        self.video = Video(camera=int(source)) if source.isnumeric() \
+            else Video(input_path=source)
+        self.video_iter = iter(self.video)
+        self.video_buffer = deque()
+        self.process_queue = deque(maxlen=self.buf_len)
+        self.frame_counter = 0
+        self.last_frame_num = -1
+        self.running = True
+
+    def set_video_pos(self, pos: float):
+        if self.video is None:
+            return
+        was_running = self.running
+        self.running = False
+        index = int(pos*self.video_frames)
+        cap = self.video.video_capture
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_POS_FRAMES, index)
+        self.frame_counter = index
+        self.running = True
+        time.sleep(0.1)
+        self.running = was_running
+
     def read_video(self):
-        if len(self.video_buffer) >= self.buf_len:
+        if self.video is None or len(self.video_buffer) >= self.buf_len:
             return False
         try:
             frame = next(self.video_iter)
@@ -170,7 +217,9 @@ class Tracker:
             self.process_queue.append((frame, self.frame_counter))
             self.frame_counter += 1
         except StopIteration:
-            pass
+            print('Video ended.')
+            self.running = False
+            return False
         return True
 
     def show_video(self):
@@ -192,7 +241,7 @@ class Tracker:
         tracker_period = frame_num - self.last_frame_num
         self.last_frame_num = frame_num
 
-        print(tracker_period)
+        # print(tracker_period)
 
         # inference
         yolo_detections = self.model(frame,
