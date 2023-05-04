@@ -22,41 +22,19 @@ logging.disable(logging.CRITICAL)
 threads_running = True
 
 
-def add_synth(synth_map, id, class_id, synthdef):
+def add_synth(id, class_id, synthdef):
     s = synths.server.add_synth(synthdef, add_action='addBefore', fx_bus=fx_bus.bus_id)
     if synthdef == synths.grainer:
-        buffers[id] = synths.load_buffer_class(class_id)
-        s['buffer'] = buffers[id]
-    if synthdef == synths.player:
-        buffers[id] = synths.load_buffer_class(class_id)
-        s['buffer'] = buffers[id]
-        s['sample_rate'] = buffers[id].sample_rate
+        buf_id, _ = synths.random_class_buffer(class_id)
+        s['buffer_id'] = buf_id
+    elif synthdef == synths.player:
+        buf_id, sample_rate = synths.random_class_buffer(class_id)
+        s['buffer_id'] = buf_id
+        s['sample_rate'] = sample_rate
+
     if id not in synth_map:
         synth_map[id] = []
     synth_map[id].append(s)
-
-
-def face_params_changed(id, params):
-    # synth = None
-    #
-    # if id not in synth_map:
-    #     return
-    # for s in synth_map[id]:
-    #     if s.synthdef.name == 'grainer':
-    #         synth = s
-    #         break
-    # if synth is None:
-    #     return
-    #
-    # if params['emotion'] != 'neutral':
-    #     buffer = synths.load_buffer_emotion(params['gender'], params['emotion'])
-    # else:
-    #     buffer = synths.load_buffer_class(0)
-    # synth['buffer'] = buffer
-    # if id in buffers:
-    #     buffers[id].free()
-    # buffers[id] = buffer
-    pass
 
 
 def change_params(synth, object):
@@ -104,12 +82,9 @@ def process():
         all, new, deleted = result
 
         for o in new:
-            # if o.class_id == 0:
-            #     tracker.all_objs[o.id].params_changed = face_params_changed
-
             for m in synth_mappings:
                 if o.class_id in m.object_classes:
-                    add_synth(synth_map, o.id, o.class_id, m.synthdef)
+                    add_synth(o.id, o.class_id, m.synthdef)
 
         for o in deleted:
             if o.id not in synth_map:
@@ -130,7 +105,7 @@ def process():
             for m in synth_mappings:
                 if o.class_id in m.object_classes:
                     if o.id not in synth_map or not any([s.synthdef.name == m.synthdef.name for s in synth_map[o.id]]):
-                        add_synth(synth_map, o.id, o.class_id, m.synthdef)
+                        add_synth(o.id, o.class_id, m.synthdef)
 
 
 if __name__ == '__main__':
@@ -141,15 +116,7 @@ if __name__ == '__main__':
     opt = parser.parse_args()
     src = opt.source
 
-    # src = 'test.mp4'
-    # src = 'https://www.youtube.com/watch?v=b1LEJCV6kPc'
-    # src = 'https://www.youtube.com/watch?v=WJLkXlhE1FM'
-    # src = 'https://www.youtube.com/watch?v=HOASHDryAwU'
-    # src = 'https://www.youtube.com/watch?v=gu5p_TdU9vw'
-
     tracker = Tracker()
-    # tracker.classes = (tracker.get_class_index('person'))
-    # tracker.classes = range(1, 80)
 
     fx_bus = synths.server.add_bus_group(2, 'audio')
     rev = synths.server.add_synth(synths.reverb, in_bus=fx_bus.bus_id)

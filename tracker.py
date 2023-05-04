@@ -10,27 +10,25 @@ from norfair import Detection, Paths, Video
 from norfair.tracker import TrackedObject
 
 from threading import Thread
-from numpy_ringbuffer import RingBuffer
 from collections import deque
 
 import numpy as np
 
 import face_tracking as ft
 
+FACE_PERIOD = 0.5
 
-FACE_PERIOD = 5
+EMO_IMAGES = dict()
+for e in ft.emotion_labels:
+    EMO_IMAGES[e] = cv2.imread('./images/' + e + '.png', cv2.IMREAD_UNCHANGED)
 
 
 def analyze_face(obj, frame):
     x1, y1, x2, y2 = obj.box
     if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0:
-        gender, emotion, reg = ft.get_face(frame[int(y1):int(y2), int(x1):int(x2)])
-        params = {'emotion': emotion, 'gender': gender}
-        obj.set_params(params)
-
-
-def get_tracker():
-    return tracker
+        gender, emotion, reg, conf = ft.get_face(frame[int(y1):int(y2), int(x1):int(x2)])
+        if conf > 60:
+            obj.params = {'emotion': emotion, 'gender': gender, 'face_reg': reg}
 
 
 class Object:
@@ -42,7 +40,7 @@ class Object:
         self.speed = 0
         self.frame_num = 0
         self.params = dict()
-        self.params_changed = None
+        self.old_params = dict()
         self.face_thread = None
         self.face_time = 0
 
@@ -54,15 +52,18 @@ class Object:
 
     def copy_attr(self, obj):
         self.params = obj.params
-        self.params_changed = obj.params_changed
+        self.old_params = obj.old_params
         self.face_thread = obj.face_thread
         self.face_time = obj.face_time
 
-    def set_params(self, p):
-        if self.params != p:
-            if self.params_changed is not None:
-                self.params_changed(self.id, p)
-            self.params = p
+    def params_changed(self):
+        if 'emotion' not in self.old_params:
+            changed = 'emotion' in self.params
+        else:
+            changed = self.old_params['emotion'] != self.params['emotion'] or \
+                  self.old_params['gender'] != self.params['gender']
+        self.old_params = self.params
+        return changed
 
     @property
     def pos(self):
@@ -79,6 +80,18 @@ class Object:
     @property
     def area(self):
         return (self.box[2] - self.box[0]) * (self.box[3] - self.box[1])
+
+    @property
+    def sex_id(self):
+        if 'gender' in self.params:
+            return ft.gender_labels.index(self.params['gender'])
+        return 0
+
+    @property
+    def emo_id(self):
+        if 'emotion' in self.params:
+            return ft.emotion_labels.index(self.params['emotion'])
+        return 0
 
     @property
     def can_process_face(self):
@@ -136,8 +149,9 @@ class Tracker:
 
         self.__prev_objs = set()
         self.all_objs = dict()
-        self.new_objs = None
-        self.del_objs = None
+        self.curr_objs = set()
+        self.new_objs = set()
+        self.del_objs = set()
 
     @property
     def video_size(self):
@@ -199,7 +213,7 @@ class Tracker:
             return
         was_running = self.running
         self.running = False
-        index = int(pos*self.video_frames)
+        index = int(pos * self.video_frames)
         cap = self.video.video_capture
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_POS_FRAMES, index)
@@ -225,8 +239,24 @@ class Tracker:
     def show_video(self):
         if len(self.video_buffer) < self.buf_len:
             return False
-        frame = self.video_buffer.popleft()[0]
+        frame = self.video_buffer.popleft()[0].copy()
         norfair.draw_boxes(frame, self.tracks, draw_labels=True, draw_ids=True)
+
+        for o in self.curr_objs.copy():
+            if not o.params:
+                continue
+            rect = o.params['face_reg']
+            x, y, w, h = int(rect['x'] + o.box[0]), int(rect['y'] + o.box[1]), int(rect['w']), int(rect['h'])
+            img = EMO_IMAGES[o.params['emotion']].copy()
+            img = cv2.resize(img, (w, h))
+            alpha_s = img[:, :, 3] / 255.0
+            alpha_l = 1.0 - alpha_s
+            try:
+                for c in range(3):
+                    frame[y:y + h, x:x + w, c] = (alpha_s * (240 - img[:, :, c]) + alpha_l * frame[y:y + h, x:x + w, c])
+            except ValueError:
+                pass
+
         self.video.show(frame)
         return True
 
@@ -251,7 +281,7 @@ class Tracker:
                                      classes=self.classes)
         detections = yolo_detections_to_norfair_detections(yolo_detections, track_points='bbox')
 
-        curr_objs = set()
+        self.curr_objs = set()
         self.tracks = self.tracker.update(detections, period=tracker_period)
 
         for track in self.tracks:
@@ -265,17 +295,19 @@ class Tracker:
                 # velocity = difference in position over one frame
                 active_obj.speed = active_obj.get_distance(ex_obj) / (active_obj.frame_num - ex_obj.frame_num)
                 active_obj.copy_attr(ex_obj)
+                self.all_objs[id].__dict__ = active_obj.__dict__.copy()
+            else:
+                self.all_objs[id] = active_obj
 
             # face tracking
-            if active_obj.can_process_face:
-                active_obj.process_face(frame)
+            if self.all_objs[id].can_process_face:
+                self.all_objs[id].process_face(frame)
 
-            self.all_objs[id] = active_obj
-            curr_objs.add(active_obj)
+            self.curr_objs.add(self.all_objs[id])
 
-        self.new_objs = curr_objs - self.__prev_objs
-        self.del_objs = self.__prev_objs - curr_objs
-        self.__prev_objs = curr_objs
+        self.new_objs = self.curr_objs - self.__prev_objs
+        self.del_objs = self.__prev_objs - self.curr_objs
+        self.__prev_objs = self.curr_objs
         for o in self.del_objs:
             self.all_objs.pop(o.id)
-        return curr_objs, self.new_objs, self.del_objs
+        return self.curr_objs, self.new_objs, self.del_objs

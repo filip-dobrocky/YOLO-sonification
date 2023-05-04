@@ -11,9 +11,10 @@ from supriya.synthdefs import synthdef, Envelope
 import time
 import os
 import random
+from threading import Thread
 
 random.seed()
-server = supriya.Server().boot(port=7400)
+server = supriya.Server().boot(port=7400, buffer_count=2048)
 
 global_env = Envelope(
     amplitudes=(0, 1, 0),
@@ -21,6 +22,8 @@ global_env = Envelope(
     curves=(2, -2),
     release_node=1
 )
+
+BUFFERS = {}
 
 
 def load_buffer_class(cls):
@@ -43,10 +46,69 @@ def load_buffer_emotion(gender, emotion):
     return buffer
 
 
+def preload_buffers():
+    CLASS_DIR = './audio/wav'
+    class_files = os.listdir(CLASS_DIR)
+    for f in class_files:
+        if not f.endswith('.wav'):
+            continue
+        file = os.path.join(CLASS_DIR, f)
+        cls = f.split('_')[0]
+        if cls not in BUFFERS:
+            BUFFERS[cls] = []
+        buf = server.add_buffer(file_path=file, channel_count=1)
+        # buf.normalize()
+        BUFFERS[cls].append(buf)
+
+    EMO_DIR = './audio/wav/emotions'
+    emo_files = os.listdir(EMO_DIR)
+    for f in emo_files:
+        if not f.endswith('.wav'):
+            continue
+        file = os.path.join(EMO_DIR, f)
+        name = f.split('_')
+        sex = name[0]
+        emotion = name[1]
+        if sex not in BUFFERS:
+            BUFFERS[sex] = {}
+        if emotion not in BUFFERS[sex]:
+            BUFFERS[sex][emotion] = []
+        buf = server.add_buffer(file_path=file, channel_count=1)
+        # buf.normalize()
+        BUFFERS[sex][emotion].append(buf)
+    print('Buffers loaded.')
+
+
+def random_class_buffer(class_id):
+    try:
+        buf = random.choice(BUFFERS[str(class_id)])
+        return buf.buffer_id, buf.sample_rate
+    except KeyError:
+        return 0, 0
+
+
+def random_emotion_buffer(sex, emotion):
+    try:
+        if emotion != 'neutral':
+            buf = random.choice(BUFFERS[sex][emotion])
+            return buf.buffer_id, buf.sample_rate
+        return random_class_buffer(0)
+    except KeyError:
+        return 0, 0
+
+
+def random_sex_buffer(sex):
+    try:
+        buf = random.choice(random.choice(BUFFERS[sex]))
+        return buf.buffer_id, buf.sample_rate
+    except KeyError:
+        return 0, 0
+
+
 @synthdef()
-def player(fx_bus, buffer, sample_rate, playback_rate=1, gate=1, out_bus=0, depth=0.4, level=0.5, pan=0):
+def player(fx_bus, sample_rate, buffer_id=0, playback_rate=1, gate=1, out_bus=0, depth=0.4, level=0.5, pan=0):
     gen = PlayBuf.ar(
-        buffer_id=buffer,
+        buffer_id=buffer_id,
         rate=playback_rate*(sample_rate/server.status.actual_sample_rate),
         loop=True
     )
@@ -57,12 +119,12 @@ def player(fx_bus, buffer, sample_rate, playback_rate=1, gate=1, out_bus=0, dept
 
 
 @synthdef()
-def grainer(fx_bus, buffer, speed=0, speed_curve=0.6, gate=1, out_bus=0, depth=0.4, level=0.5, pan=0):
+def grainer(fx_bus, buffer_id=0, speed=0, speed_curve=0.6, gate=1, out_bus=0, depth=0.4, level=0.5, pan=0):
     dust = Dust.ar(3+(speed**speed_curve)*9)
     direction = ClipNoise.kr()
     gen = GrainBuf.ar(
         channel_count=1,
-        buffer_id=buffer,
+        buffer_id=buffer_id,
         rate=direction*(0.9+speed**speed_curve),
         duration=0.1+dust*1.5*(1-speed**speed_curve),
         position=dust,
@@ -128,28 +190,35 @@ synthdefs = [reverb, duster, beeper, grainer, player, droner]
 for s in synthdefs:
     server.add_synthdef(s)
 
+buffers_thread = Thread(target=preload_buffers, daemon=True)
+buffers_thread.start()
+
 
 if __name__ == '__main__':
 
     # b = load_buffer_class(0)
-    b = load_buffer_emotion('Woman', 'sad')
+    b1 = load_buffer_emotion('Woman', 'sad')
+    b2 = load_buffer_emotion('Man', 'angry')
 
     fx_bus = server.add_bus_group(2, 'audio')
     rev = server.add_synth(reverb, in_bus=fx_bus.bus_id)
     # synth1 = server.add_synth(popcorn, add_action='addBefore', fx_bus=fx_bus.bus_id)
     # synth2 = server.add_synth(beeper, add_action='addBefore', fx_bus=fx_bus.bus_id)
-    # synth3 = server.add_synth(grainer, add_action='addBefore', fx_bus=fx_bus.bus_id, buffer=b, sample_rate=b.sample_rate, speed=0)
-    synth3 = server.add_synth(droner, add_action='addBefore', fx_bus=fx_bus.bus_id)
+    synth3 = server.add_synth(grainer, add_action='addBefore', fx_bus=fx_bus.bus_id, buffer=b2.buffer_id, speed=0)
+    # synth3 = server.add_synth(droner, add_action='addBefore', fx_bus=fx_bus.bus_id)
     time.sleep(1)
-    synth3['pan'] = 0.0
+    synth3['pan'] = 1.0
     synth3['depth'] = 0.1
-    synth3['freq'] = 120
+    # synth3['freq'] = 120
     # synth2['freq'] = 200
     # for p in synth1.synthdef.parameter_names:
     #     print(synth1[p])
-    time.sleep(10)
+    time.sleep(3)
+    synth3['pan'] = -1.0
+    synth3['buffer'] = b1.buffer_id
     # synth1['gate'] = 0
     # synth2['gate'] = 0
+    time.sleep(4)
     synth3['gate'] = 0
     time.sleep(4)
     server.quit()

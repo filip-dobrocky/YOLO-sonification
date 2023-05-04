@@ -20,7 +20,7 @@ class SynthNode(BaseNode):
             self.add_input('classes')
         parameters = set(self.synthdef.parameter_names) \
             if self.synthdef is not None else {'pan', 'level', 'depth'}
-        ignored = {'fx_bus', 'out_bus', 'gate', 'buffer'}
+        ignored = {'fx_bus', 'out_bus', 'gate'}
         for p in parameters - ignored:
             self.add_input(p)
 
@@ -184,7 +184,7 @@ class ObjectParameterNode(BaseNode):
         self.add_input('scaling')
         self.add_output('parameter')
 
-        self.parameters = ['x', 'y', 'area', 'speed']
+        self.parameters = ['x', 'y', 'area', 'speed', 'class_id', 'emo_id', 'sex_id']
         self.add_combo_menu('parameter', 'Parameter', self.parameters)
 
     @property
@@ -193,7 +193,8 @@ class ObjectParameterNode(BaseNode):
                      'y': mapping.norm_y,
                      'area': mapping.norm_area,
                      'speed': mapping.norm_speed}
-        return norm_dict[self.get_property('parameter')]
+        param = self.get_property('parameter')
+        return norm_dict[param] if param in norm_dict else lambda x: x
 
     @property
     def scaling(self):

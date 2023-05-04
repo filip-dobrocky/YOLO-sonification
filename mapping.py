@@ -1,6 +1,7 @@
 from tracker import Object
 import synths
 import supriya
+import face_tracking as ft
 from typing import Callable, List
 
 
@@ -9,6 +10,9 @@ norm_y = lambda x: x
 norm_area = lambda x: x
 norm_speed = lambda x: max(0, min(x / 50, 1.0))
 to_pan = lambda x: max(-1.0, min(2*x-1, 1.0))
+cls_to_buf = lambda x: synths.random_class_buffer_id(x)
+sex_to_buf = lambda x: synths.random_sex_buffer(ft.gender_labels[x])
+emo_to_buf = lambda x, y: synths.random_emotion_buffer(ft.gender_labels[x], ft.emotion_labels[y])
 
 synth_mappings = list()
 param_mappings = list()
@@ -43,6 +47,21 @@ class ParameterMapping:
         return False
 
     def apply(self, synth: supriya.Synth, object: Object):
+        if self.synth_attr == 'buffer_id':
+            if object.params_changed():
+                buf_id, sample_rate = None, None
+                if self.obj_attr == 'class_id':
+                    buf_id, sample_rate = cls_to_buf(self.scaling(object.class_id))
+                elif self.obj_attr == 'sex_id':
+                    buf_id, sample_rate = sex_to_buf(self.scaling(object.sex_id))
+                elif self.obj_attr == 'emo_id':
+                    buf_id, sample_rate = emo_to_buf(object.sex_id, self.scaling(object.emo_id))
+                if buf_id is not None:
+                    synth['buffer_id'] = buf_id
+                    if synth.synthdef == synths.player:
+                        synth['sample_rate'] = sample_rate
+                    return
+
         synth[self.synth_attr] = self.scaling(getattr(object, self.obj_attr))
 
 
