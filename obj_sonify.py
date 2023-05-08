@@ -144,5 +144,7 @@ if __name__ == '__main__':
     gui.run()
 
     threads_running = False
-
+    read_thread.join(1)
+    process_thread.join(1)
+    display_thread.join(1)
     synths.server.quit()

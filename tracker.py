@@ -123,6 +123,7 @@ class Tracker:
     display_boxes = True
     display_emotions = True
     detect_faces = True
+    moving_cam = False
 
     def __init__(self, source=None,
                  conf_threshold: float = 0.6,
@@ -135,20 +136,17 @@ class Tracker:
         self.image_size = image_size
         self.iou_threshold = iou_threshold
         self.conf_threshold = conf_threshold
+        self.dist_threshold = dist_threshold
 
         self.tracks = None
         self.model = YOLO('./yolov7-e6e.pt')
         self.names = self.model.model.names
         self.classes = None
+        self.motion_estimator = None
+        self.tracker = None
 
         if source is not None:
             self.load_video(source)
-
-        self.tracker = norfair.Tracker(
-            distance_function='iou',
-            distance_threshold=dist_threshold,
-            hit_counter_max=6
-        )
 
         self.__prev_objs = set()
         self.all_objs = dict()
@@ -200,12 +198,22 @@ class Tracker:
     def get_class_name(self, id):
         return self.names[id]
 
+    def reset_tracker(self):
+        self.video_buffer = deque()
+        self.process_queue = deque(maxlen=self.buf_len)
+        self.tracker = norfair.Tracker(
+            distance_function='iou',
+            distance_threshold=self.dist_threshold,
+            hit_counter_max=6
+        )
+        self.motion_estimator = norfair.camera_motion.MotionEstimator()
+
     def load_video(self, source):
+        self.running = False
+        self.reset_tracker()
         self.video = Video(camera=int(source)) if source.isnumeric() \
             else Video(input_path=source)
         self.video_iter = iter(self.video)
-        self.video_buffer = deque()
-        self.process_queue = deque(maxlen=self.buf_len)
         self.frame_counter = 0
         self.last_frame_num = -1
         self.running = True
@@ -220,6 +228,7 @@ class Tracker:
         if cap.isOpened():
             cap.set(cv2.CAP_PROP_POS_FRAMES, index)
         self.frame_counter = index
+        self.reset_tracker()
         self.running = True
         time.sleep(0.1)
         self.running = was_running
@@ -265,6 +274,15 @@ class Tracker:
         self.video.show(frame)
         return True
 
+    def get_cam_transformation(self, frame):
+        trans = None
+        if self.moving_cam and self.motion_estimator is not None:
+            try:
+                trans = self.motion_estimator.update(frame)
+            except:
+                self.reset_tracker()
+        return trans
+
     def track(self):
         if len(self.process_queue):
             tmp = self.process_queue.popleft()
@@ -287,7 +305,8 @@ class Tracker:
         detections = yolo_detections_to_norfair_detections(yolo_detections, track_points='bbox')
 
         self.curr_objs = set()
-        self.tracks = self.tracker.update(detections, period=tracker_period)
+        self.tracks = self.tracker.update(detections, period=tracker_period,
+                                          coord_transformations=self.get_cam_transformation(frame))
 
         for track in self.tracks:
             active_obj = Object(track)

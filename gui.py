@@ -160,7 +160,9 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         self.classes_text.textChanged.connect(self.classes_changed)
         self.face_checkbox = QtWidgets.QCheckBox('Detect faces', checked=tracker.detect_faces)
         self.boxes_checkbox = QtWidgets.QCheckBox('Draw boxes', checked=tracker.display_boxes)
+        self.moving_checkbox = QtWidgets.QCheckBox('Moving camera', checked=tracker.moving_cam)
         self.emotions_checkbox = QtWidgets.QCheckBox('Draw emotions', checked=tracker.display_emotions)
+        self.moving_checkbox.toggled.connect(self.moving_toggled)
         self.face_checkbox.toggled.connect(self.face_toggled)
         self.boxes_checkbox.toggled.connect(self.boxes_toggled)
         self.emotions_checkbox.toggled.connect(self.emotions_toggled)
@@ -174,6 +176,7 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         vbox.addWidget(self.iou_slider)
         vbox.addWidget(self.size_label)
         vbox.addWidget(self.size_slider)
+        vbox.addWidget(self.moving_checkbox)
         vbox.addWidget(self.face_checkbox)
         hbox = QtWidgets.QHBoxLayout()
         hbox.addWidget(self.boxes_checkbox)
@@ -207,7 +210,7 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
             files = dialog.selectedFiles()
             tracker.load_video(files[0])
         self.timer.start()
-        self.play_button.toggle()
+        self.play_button.setText('Stop' if tracker.running else 'Play')
 
     def play_toggled(self, checked):
         self.play_button.setText('Stop' if checked else 'Play')
@@ -261,6 +264,9 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
 
     def face_toggled(self, checked):
         tracker.detect_faces = checked
+
+    def moving_toggled(self, checked):
+        tracker.moving_cam = checked
 
 
 class LabeledFloatSlider(QtWidgets.QWidget):
