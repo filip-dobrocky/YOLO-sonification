@@ -16,7 +16,7 @@ import numpy as np
 
 import face_tracking as ft
 
-FACE_PERIOD = 0.5
+FACE_PERIOD = 0.5   # seconds
 
 EMO_IMAGES = dict()
 for e in ft.emotion_labels:
@@ -120,6 +120,9 @@ class Tracker:
     process_queue = None
     frame_counter = 0
     last_frame_num = -1
+    display_boxes = True
+    display_emotions = True
+    detect_faces = True
 
     def __init__(self, source=None,
                  conf_threshold: float = 0.6,
@@ -156,7 +159,7 @@ class Tracker:
     @property
     def video_size(self):
         cap = self.video.video_capture
-        w, h = 0, 0
+        w, h = 1, 1
         if cap.isOpened():
             w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
             h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
@@ -189,7 +192,7 @@ class Tracker:
 
     @property
     def video_progress(self):
-        return (self.frame_counter / self.video_frames) * 100
+        return (self.frame_counter / self.video_frames) * 100 if self.video_frames else 0
 
     def get_class_index(self, name):
         return self.names.index(name)
@@ -198,7 +201,6 @@ class Tracker:
         return self.names[id]
 
     def load_video(self, source):
-        # TODO: youtube download
         self.video = Video(camera=int(source)) if source.isnumeric() \
             else Video(input_path=source)
         self.video_iter = iter(self.video)
@@ -236,12 +238,7 @@ class Tracker:
             return False
         return True
 
-    def show_video(self):
-        if len(self.video_buffer) < self.buf_len:
-            return False
-        frame = self.video_buffer.popleft()[0].copy()
-        norfair.draw_boxes(frame, self.tracks, draw_labels=True, draw_ids=True)
-
+    def draw_emotions(self, frame):
         for o in self.curr_objs.copy():
             if not o.params:
                 continue
@@ -257,6 +254,14 @@ class Tracker:
             except ValueError:
                 pass
 
+    def show_video(self):
+        if len(self.video_buffer) < self.buf_len:
+            return False
+        frame = self.video_buffer.popleft()[0].copy()
+        if self.display_boxes:
+            norfair.draw_boxes(frame, self.tracks, draw_labels=True, draw_ids=True)
+        if self.display_emotions:
+            self.draw_emotions(frame)
         self.video.show(frame)
         return True
 
@@ -300,8 +305,11 @@ class Tracker:
                 self.all_objs[id] = active_obj
 
             # face tracking
-            if self.all_objs[id].can_process_face:
-                self.all_objs[id].process_face(frame)
+            if self.detect_faces:
+                if self.all_objs[id].can_process_face:
+                    self.all_objs[id].process_face(frame)
+            elif len(self.all_objs[id].params):
+                self.all_objs[id].params = {}
 
             self.curr_objs.add(self.all_objs[id])
 

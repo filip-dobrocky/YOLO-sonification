@@ -1,6 +1,10 @@
 # pip install -r requirements.txt
 
 # base ----------------------------------------
-motpy
+norfair
 supriya
 deepface
+pitchtools
+musical_scales
+NodeGraphQt
+PySide2

@@ -1,6 +1,3 @@
-import os
-import signal
-
 from Qt import QtCore, QtWidgets
 from NodeGraphQt import NodeGraph, BaseNode, NodeBaseWidget, NodesPaletteWidget
 from text_completer import CompleterTextEdit
@@ -38,7 +35,14 @@ class MainWindow(QtWidgets.QMainWindow):
         super(MainWindow, self).__init__()
         self.graph = NodeGraph()
         self.graph.set_context_menu_from_file('./hotkeys.json')
-
+        menu_bar = QtWidgets.QMenuBar()
+        menu = self.graph.context_menu().qmenu
+        menu_bar.addMenu(menu.get_menu('&File'))
+        menu_bar.addMenu(menu.get_menu('&Edit'))
+        menu_bar.addMenu(menu.get_menu('&Nodes'))
+        self.setMenuBar(menu_bar)
+        self.setWindowTitle('YOLO Sonification')
+        
         self.graph.register_nodes([*nodes.synth_nodes,
                                    nodes.ClassesRangeSpecifierNode,
                                    nodes.ClassesTextSpecifierNode,
@@ -54,9 +58,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         graph_widget = self.graph.widget
 
-        # TODO: load default
+        self.graph.load_session('default-patch.json')
 
-        self.graph.auto_layout_nodes()
         self.graph.clear_selection()
         self.graph.fit_to_selection()
 
@@ -65,21 +68,24 @@ class MainWindow(QtWidgets.QMainWindow):
         nodes_palette.set_category_label('nodes.synths', 'Synth')
         nodes_palette.set_category_label('nodes.classes', 'Object Classes')
         nodes_palette.set_category_label('nodes.parameters', 'Object Parameters')
+        nodes_palette.setMaximumHeight(250)
 
         tracker_panel = TrackerPanel()
 
-        # TODO: layout -> QSplitter
-        v_layout = QtWidgets.QVBoxLayout()
-        v_layout.addWidget(graph_widget, 3)
-        v_layout.addWidget(nodes_palette)
+        v_splitter = QtWidgets.QSplitter(orientation=QtCore.Qt.Vertical)
+        v_splitter.addWidget(graph_widget)
+        v_splitter.addWidget(nodes_palette)
 
-        h_layout = QtWidgets.QHBoxLayout()
-        h_layout.addLayout(tracker_panel)
-        h_layout.addLayout(v_layout, 7)
+        h_splitter = QtWidgets.QSplitter()
+        panel_widget = QtWidgets.QWidget()
+        panel_widget.setLayout(tracker_panel)
+        panel_widget.setMaximumWidth(500)
+        h_splitter.addWidget(panel_widget)
+        h_splitter.addWidget(v_splitter)
+        h_splitter.setStretchFactor(0, 1)
+        h_splitter.setStretchFactor(1, 4)
 
-        central_widget = QtWidgets.QWidget(self)
-        self.setCentralWidget(central_widget)
-        central_widget.setLayout(h_layout)
+        self.setCentralWidget(h_splitter)
 
     def session_changed(self, session):
         nodes = self.graph.all_nodes()
@@ -152,6 +158,12 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         self.conf_slider.valueChanged.connect(self.conf_changed)
         self.size_slider.valueChanged.connect(self.img_size_changed)
         self.classes_text.textChanged.connect(self.classes_changed)
+        self.face_checkbox = QtWidgets.QCheckBox('Detect faces', checked=tracker.detect_faces)
+        self.boxes_checkbox = QtWidgets.QCheckBox('Draw boxes', checked=tracker.display_boxes)
+        self.emotions_checkbox = QtWidgets.QCheckBox('Draw emotions', checked=tracker.display_emotions)
+        self.face_checkbox.toggled.connect(self.face_toggled)
+        self.boxes_checkbox.toggled.connect(self.boxes_toggled)
+        self.emotions_checkbox.toggled.connect(self.emotions_toggled)
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addWidget(self.classes_checkbox)
@@ -162,6 +174,11 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         vbox.addWidget(self.iou_slider)
         vbox.addWidget(self.size_label)
         vbox.addWidget(self.size_slider)
+        vbox.addWidget(self.face_checkbox)
+        hbox = QtWidgets.QHBoxLayout()
+        hbox.addWidget(self.boxes_checkbox)
+        hbox.addWidget(self.emotions_checkbox)
+        vbox.addLayout(hbox)
         vbox.addStretch(0)
         self.tracker_box.setLayout(vbox)
 
@@ -204,6 +221,8 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
             self.video_slider.blockSignals(True)
             self.video_slider.setSliderPosition(tracker.video_progress)
             self.video_slider.blockSignals(False)
+            if not tracker.running and self.play_button.text() == 'Stop':
+                self.play_button.setText('Play')
 
     def iou_changed(self, value):
         tracker.iou_threshold = value
@@ -233,6 +252,15 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
             except ValueError:
                 print('Invalid name', n)
         tracker.classes = classes
+
+    def boxes_toggled(self, checked):
+        tracker.display_boxes = checked
+
+    def emotions_toggled(self, checked):
+        tracker.display_emotions = checked
+
+    def face_toggled(self, checked):
+        tracker.detect_faces = checked
 
 
 class LabeledFloatSlider(QtWidgets.QWidget):

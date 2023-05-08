@@ -1,7 +1,7 @@
 import supriya
-from supriya.ugens import In, Out, SinOsc, Saw, Dust, PlayBuf,\
-                          FreeVerb, EnvGen, GrainBuf, Compander, Pulse, LFNoise2, Mix
-from supriya.ugens.noise import WhiteNoise, Rand, ClipNoise
+from supriya.ugens import In, Out, SinOsc, Saw, Dust, PlayBuf, FreeVerb, EnvGen, GrainBuf, Compander, Pulse,\
+                          LFNoise2, Mix, Limiter, LinExp, LinLin, LFSaw, DC, Hasher, Sweep, Linen, Impulse
+from supriya.ugens.noise import WhiteNoise, Rand, ClipNoise, CoinGate, LFClipNoise
 from supriya.ugens.filters import BPF, Decay2
 from supriya.ugens.beq import BLowPass
 from supriya.ugens.panning import Pan2
@@ -11,6 +11,7 @@ from supriya.synthdefs import synthdef, Envelope
 import time
 import os
 import random
+import logging
 from threading import Thread
 
 random.seed()
@@ -76,7 +77,7 @@ def preload_buffers():
         buf = server.add_buffer(file_path=file, channel_count=1)
         # buf.normalize()
         BUFFERS[sex][emotion].append(buf)
-    print('Buffers loaded.')
+    logging.info('Buffers loaded.')
 
 
 def random_class_buffer(class_id):
@@ -137,7 +138,7 @@ def grainer(fx_bus, buffer_id=0, speed=0, speed_curve=0.6, gate=1, out_bus=0, de
 
 
 @synthdef()
-def beeper(fx_bus, gate=1, out_bus=0, depth=0.4, freq=1, tempo=120, level=0.1, pan=0):
+def beeper(fx_bus, gate=1, out_bus=0, depth=0.4, freq=1, tempo=120, level=0.5, pan=0):
     envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
     gen = SinOsc.ar(freq) * level * 0.5 * (Saw.kr(tempo / 60) + 0.5)
     out_sig = 0.7 * envelope * Pan2.ar(gen, pan)
@@ -176,6 +177,57 @@ def droner(fx_bus, gate=1, out_bus=0, depth=0.2, freq=100, level=0.5, pan=0, mov
 
 
 @synthdef()
+def operator(fx_bus, gate=1, out_bus=0, depth=0.4, freq=1, ratio=2.0, fm_depth=1.0, tempo=1, level=0.5, pan=0):
+    envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
+    mod = SinOsc.ar(ratio*freq)
+    carrier = SinOsc.ar(freq+fm_depth*mod*freq) * level * 0.5 * (Saw.kr(tempo / 60) + 0.5)
+    out_sig = 0.7 * envelope * Pan2.ar(carrier, pan)
+    Out.ar(fx_bus, out_sig * depth)
+    Out.ar(out_bus, out_sig * (1 - depth))
+
+
+@synthdef()
+def pulsar(fx_bus, gate=1, out_bus=0, depth=0.4, level=0.5, pan=0, freq=1, formant_freq=1, sine_cycles=2):
+    envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
+    pulsaret = LinLin.ar(LFSaw.ar(freq, 1.0), -1, 1, 0, 1) * formant_freq / freq
+    window = pulsaret.hanning_window()
+    cycles = DC.ar(sine_cycles)
+    sig = SinOsc.ar(pulsaret*6.283*cycles.floor()) * window * (pulsaret < 1.0)
+    out_sig = level * envelope * Pan2.ar(sig, pan)
+    Out.ar(fx_bus, out_sig * depth)
+    Out.ar(out_bus, out_sig * (1 - depth))
+
+
+@synthdef()
+def drummer(fx_bus, gate=1, out_bus=0, depth=0.4, level=0.5, pan=0, tempo=100, density=0.7):
+    envelope = EnvGen.kr(envelope=global_env, gate=gate, done_action=2)
+    pulse = Impulse.ar(tempo/60)
+    kick_gate = CoinGate.ar(density, pulse)
+    kick = SinOsc.ar(EnvGen.ar(envelope=Envelope((200, 50, 50), (0.05, 0.2)), gate=kick_gate))
+    kick = kick + (Hasher.ar(Sweep.ar()) * EnvGen.ar(envelope=Envelope.percussive(0.001, 0.001, 0.001), gate=kick_gate))
+    kick = kick * EnvGen.ar(envelope=Envelope.percussive(0.001, 1.0), gate=kick_gate)
+
+    snare_gate = CoinGate.ar(density, pulse)
+    snare = SinOsc.ar(EnvGen.ar(envelope=Envelope((800, 210, 200), (0.01, 0.2)), gate=snare_gate))
+    snare = snare + (BPF.ar(Hasher.ar(Sweep.ar()), 3000, 0.7) *
+                     EnvGen.ar(envelope=Envelope.percussive(0.1, 0.3, 5), gate=snare_gate))
+    snare = snare.tanh() * EnvGen.ar(envelope=Envelope.percussive(0.001, 0.3), gate=snare_gate)
+
+    hat_gate = CoinGate.ar(density, pulse)
+    hat = BPF.ar(Hasher.ar(Sweep.ar()), 9000, 0.1) * 6
+    hat = hat * EnvGen.ar(envelope=Envelope.percussive(0.02, 0.03), gate=hat_gate)
+
+    clap_gate = CoinGate.ar(density, pulse)
+    clap = BPF.ar(Hasher.ar(Sweep.ar()), 1100, 0.3) * 8
+    clap = clap * EnvGen.ar(envelope=Envelope((0, 1, 0, 1, 0, 1, 0), (0.001, 0.01, 0.001, 0.01, 0.001, 0.08)),
+                            gate=clap_gate)
+
+    sig = 2 * kick + 0.8 * snare + Pan2.ar(hat, 0.45) + Pan2.ar(clap, -0.15)
+    out_sig = level * envelope * Pan2.ar(sig, pan)
+    Out.ar(fx_bus, out_sig * depth)
+    Out.ar(out_bus, out_sig * (1 - depth))
+
+@synthdef()
 def reverb(in_bus, out_bus=0):
     buf = In.ar(in_bus, 2)
 
@@ -186,9 +238,20 @@ def reverb(in_bus, out_bus=0):
     Out.ar(out_bus, buf)
 
 
-synthdefs = [reverb, duster, beeper, grainer, player, droner]
+@synthdef()
+def limiter(in_bus, level=1.0,duration=0.01, out_bus=0):
+    buf = In.ar(in_bus, 2)
+
+    buf = Limiter.ar(source=buf, level=level, duration=duration)
+    Out.ar(out_bus, buf)
+
+
+synthdefs = [duster, beeper, grainer, player, droner, operator, pulsar, drummer]
 for s in synthdefs:
     server.add_synthdef(s)
+
+server.add_synthdef(reverb)
+server.add_synthdef(limiter)
 
 buffers_thread = Thread(target=preload_buffers, daemon=True)
 buffers_thread.start()
@@ -204,18 +267,24 @@ if __name__ == '__main__':
     rev = server.add_synth(reverb, in_bus=fx_bus.bus_id)
     # synth1 = server.add_synth(popcorn, add_action='addBefore', fx_bus=fx_bus.bus_id)
     # synth2 = server.add_synth(beeper, add_action='addBefore', fx_bus=fx_bus.bus_id)
-    synth3 = server.add_synth(grainer, add_action='addBefore', fx_bus=fx_bus.bus_id, buffer=b2.buffer_id, speed=0)
+    # synth3 = server.add_synth(grainer, add_action='addBefore', fx_bus=fx_bus.bus_id, buffer=b2.buffer_id, speed=0)
     # synth3 = server.add_synth(droner, add_action='addBefore', fx_bus=fx_bus.bus_id)
+    # synth3 = server.add_synth(pulsar, add_action='addBefore', fx_bus=fx_bus.bus_id)
+    synth3 = server.add_synth(drummer, add_action='addBefore', fx_bus=fx_bus.bus_id)
     time.sleep(1)
-    synth3['pan'] = 1.0
-    synth3['depth'] = 0.1
-    # synth3['freq'] = 120
-    # synth2['freq'] = 200
+    # synth3['pan'] = 1.0
+    synth3['level'] = 1.0
+    # synth3['depth'] = 0.1
+    synth3['tempo'] = 300
+    # synth3['freq'] = 50
+    # synth3['formant_freq'] = 5000
     # for p in synth1.synthdef.parameter_names:
     #     print(synth1[p])
     time.sleep(3)
-    synth3['pan'] = -1.0
-    synth3['buffer'] = b1.buffer_id
+    # synth3['freq'] = 800
+    synth3['tempo'] = 800
+    # synth3['pan'] = -1.0
+    # synth3['buffer_id'] = b1.buffer_id
     # synth1['gate'] = 0
     # synth2['gate'] = 0
     time.sleep(4)
