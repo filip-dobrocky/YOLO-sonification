@@ -120,10 +120,9 @@ def add_parameter_mapping(synthdef: supriya.SynthDef, synth_attr: str, obj_attr:
 def remove_parameter_mapping(synthdef: supriya.SynthDef, synth_attr: str):
     mapping = None
     for m in param_mappings:
-        if (synthdef is None and m.synthdef is None) or (synthdef is not None and m.synthdef.name == synthdef.name):
-            if m.synth_attr == synth_attr:
-                mapping = m
-                break
+        if m == ParameterMapping(synthdef, synth_attr):
+            mapping = m
+            break
     if mapping is not None:
         logging.info(f'Unmap parameter {synth_attr} of synth {synthdef.name if synthdef is not None else "any"}.')
         param_mappings.remove(mapping)
