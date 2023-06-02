@@ -16,19 +16,46 @@ import numpy as np
 
 import face_tracking as ft
 
-FACE_PERIOD = 0.5   # seconds
+FACE_PERIOD = 0.02   # seconds
+MAX_VID_SIZE = [1280, 720]
 
 EMO_IMAGES = dict()
 for e in ft.emotion_labels:
     EMO_IMAGES[e] = cv2.imread('./images/' + e + '.png', cv2.IMREAD_UNCHANGED)
 
+face_threads = 0
+MAX_FACE_THREADS = 5
+
+
+def clip_vid_size(w, h):
+    max_w, max_h = MAX_VID_SIZE
+    dim = (w, h)
+    if h > max_h:
+        r = max_h / float(h)
+        dim = (int(w * r), max_h)
+    elif w > max_w:
+        r = max_w / float(w)
+        dim = (max_w, int(h * r))
+    return dim
+
+
+def clip_vid_frame(frame):
+    (h, w) = frame.shape[:2]
+    dim = clip_vid_size(w, h)
+    return cv2.resize(frame, dim, interpolation=cv2.INTER_AREA)
+
 
 def analyze_face(obj, frame):
+    global face_threads
+    face_threads += 1
     x1, y1, x2, y2 = obj.box
     if x1 >= 0 and y1 >= 0 and x2 >= 0 and y2 >= 0:
-        gender, emotion, reg, conf = ft.get_face(frame[int(y1):int(y2), int(x1):int(x2)])
-        if conf > 60:
-            obj.params = {'emotion': emotion, 'gender': gender, 'face_reg': reg}
+        result = ft.get_face(frame[int(y1):int(y2), int(x1):int(x2)].copy())
+        if result is not None:
+            gender, emotion, reg, conf = result
+            if conf > 60:
+                obj.params = {'emotion': emotion, 'gender': gender, 'face_reg': reg}
+    face_threads -= 1
 
 
 class Object:
@@ -97,6 +124,8 @@ class Object:
     def can_process_face(self):
         if self.class_id != 0:
             return False
+        if face_threads >= MAX_FACE_THREADS:
+            return False
         if time.time() - self.face_time < FACE_PERIOD:
             return False
         if self.face_thread is None:
@@ -122,12 +151,12 @@ class Tracker:
     last_frame_num = -1
     display_boxes = True
     display_emotions = True
-    detect_faces = True
+    detect_faces = False
     moving_cam = False
 
     def __init__(self, source=None,
                  conf_threshold: float = 0.6,
-                 iou_threshold: float = 0.5,
+                 iou_threshold: float = 0.3,
                  image_size: int = 640,
                  dist_threshold: float = 0.85,
                  buf_len: int = 3):
@@ -161,7 +190,7 @@ class Tracker:
         if cap.isOpened():
             w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
             h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        return w, h
+        return clip_vid_size(w, h)
 
     @property
     def video_fps(self):
@@ -238,6 +267,7 @@ class Tracker:
             return False
         try:
             frame = next(self.video_iter)
+            frame = clip_vid_frame(frame)
             self.video_buffer.append((frame, self.frame_counter))
             self.process_queue.append((frame, self.frame_counter))
             self.frame_counter += 1
@@ -254,12 +284,13 @@ class Tracker:
             rect = o.params['face_reg']
             x, y, w, h = int(rect['x'] + o.box[0]), int(rect['y'] + o.box[1]), int(rect['w']), int(rect['h'])
             img = EMO_IMAGES[o.params['emotion']].copy()
-            img = cv2.resize(img, (w, h))
+            img = cv2.resize(img, (w, h), cv2.INTER_CUBIC)
             alpha_s = img[:, :, 3] / 255.0
             alpha_l = 1.0 - alpha_s
+            cv2.rectangle(frame, (x, y), (x+w, y+h), (200, 200, 200), 1, cv2.LINE_AA)
             try:
                 for c in range(3):
-                    frame[y:y + h, x:x + w, c] = (alpha_s * (240 - img[:, :, c]) + alpha_l * frame[y:y + h, x:x + w, c])
+                    frame[y:y + h, x:x + w, c] = (alpha_s * (200 - img[:, :, c]) + alpha_l * frame[y:y + h, x:x + w, c])
             except ValueError:
                 pass
 
@@ -268,7 +299,7 @@ class Tracker:
             return False
         frame = self.video_buffer.popleft()[0].copy()
         if self.display_boxes:
-            norfair.draw_boxes(frame, self.tracks, draw_labels=True, draw_ids=True)
+            norfair.draw_boxes(frame, self.tracks, draw_labels=True, draw_ids=False)
         if self.display_emotions:
             self.draw_emotions(frame)
         self.video.show(frame)

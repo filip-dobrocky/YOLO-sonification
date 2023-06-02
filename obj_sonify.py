@@ -91,8 +91,9 @@ def process():
         for o in deleted:
             if o.id not in synth_map:
                 break
-            for s in synth_map[o.id]:
+            for s in synth_map[o.id].copy():
                 s['gate'] = 0
+                synth_map[o.id].remove(s)
             synth_map.pop(o.id)
 
         for o in all:
@@ -111,7 +112,7 @@ def process():
 
 
 if __name__ == '__main__':
-    logging.info('Cuda ' + ('not ' if not torch.cuda.is_available() else '') + 'available.')
+    print('Cuda ' + ('not ' if not torch.cuda.is_available() else '') + 'available.')
 
     parser = argparse.ArgumentParser(description='Video sonification based on object tracking')
     parser.add_argument('--buffer', type=int, default='3')

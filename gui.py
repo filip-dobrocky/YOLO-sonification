@@ -3,29 +3,25 @@ from NodeGraphQt import NodeGraph, BaseNode, NodeBaseWidget, NodesPaletteWidget
 from text_completer import CompleterTextEdit
 import qdarktheme
 import cv2
-
 import nodes
 
 tracker = None
 
 
 def list_camera_ports():
-    non_working_ports = []
     dev_port = 0
-    working_ports = []
-    available_ports = []
-    while len(non_working_ports) < 6:  # if there are more than 5 non working ports stop the testing.
+    non_working_ports = 0
+    working_ports = {}
+    while non_working_ports < 6:  # if there are more than 5 non working ports stop the testing.
         camera = cv2.VideoCapture(dev_port)
         if not camera.isOpened():
-            non_working_ports.append(str(dev_port))
+            non_working_ports += 1
         else:
             is_reading, img = camera.read()
-            w = camera.get(3)
-            h = camera.get(4)
+            w = int(camera.get(3))
+            h = int(camera.get(4))
             if is_reading:
-                working_ports.append(str(dev_port))
-            else:
-                available_ports.append(str(dev_port))
+                working_ports[f'{dev_port}: {w}x{h}'] = str(dev_port)
         dev_port += 1
     return working_ports
 
@@ -58,7 +54,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         graph_widget = self.graph.widget
 
-        self.graph.load_session('default-patch.json')
+        self.graph.load_session('patches/default-patch.json')
 
         self.graph.clear_selection()
         self.graph.fit_to_selection()
@@ -111,7 +107,8 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         self.file_radio = QtWidgets.QRadioButton('Video file')
         self.file_radio.toggled.connect(self.file_source_toggled)
 
-        self.cam_combo.addItems(list_camera_ports())
+        self.cam_dict = list_camera_ports()
+        self.cam_combo.addItems(self.cam_dict.keys())
         self.cam_combo.currentTextChanged.connect(self.cam_source_changed)
         self.cam_source_changed(self.cam_combo.currentText())
         self.cam_radio.setChecked(True)
@@ -161,7 +158,8 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         self.face_checkbox = QtWidgets.QCheckBox('Detect faces', checked=tracker.detect_faces)
         self.boxes_checkbox = QtWidgets.QCheckBox('Draw boxes', checked=tracker.display_boxes)
         self.moving_checkbox = QtWidgets.QCheckBox('Moving camera', checked=tracker.moving_cam)
-        self.emotions_checkbox = QtWidgets.QCheckBox('Draw emotions', checked=tracker.display_emotions)
+        self.emotions_checkbox = QtWidgets.QCheckBox('Draw emotions', checked=tracker.display_emotions,
+                                                     enabled=self.face_checkbox.isChecked())
         self.moving_checkbox.toggled.connect(self.moving_toggled)
         self.face_checkbox.toggled.connect(self.face_toggled)
         self.boxes_checkbox.toggled.connect(self.boxes_toggled)
@@ -200,7 +198,7 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
 
     def cam_source_changed(self, source):
         if tracker is not None and len(source):
-            tracker.load_video(source)
+            tracker.load_video(self.cam_dict[source])
 
     def load_file(self):
         dialog = QtWidgets.QFileDialog()
@@ -209,8 +207,8 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         if dialog.exec_():
             files = dialog.selectedFiles()
             tracker.load_video(files[0])
-        self.timer.start()
-        self.play_button.setText('Stop' if tracker.running else 'Play')
+            self.timer.start()
+            self.play_button.setText('Stop' if tracker.running else 'Play')
 
     def play_toggled(self, checked):
         self.play_button.setText('Stop' if checked else 'Play')
@@ -264,6 +262,7 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
 
     def face_toggled(self, checked):
         tracker.detect_faces = checked
+        self.emotions_checkbox.setEnabled(checked)
 
     def moving_toggled(self, checked):
         tracker.moving_cam = checked

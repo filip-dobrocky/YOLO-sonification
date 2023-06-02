@@ -21,7 +21,7 @@ class SynthNode(BaseNode):
         parameters = set(self.synthdef.parameter_names) \
             if self.synthdef is not None else {'pan', 'level', 'depth'}
         ignored = {'fx_bus', 'out_bus', 'gate'}
-        for p in parameters - ignored:
+        for p in sorted(parameters - ignored):
             self.add_input(p)
 
 
@@ -257,7 +257,7 @@ class ParameterScalingNode(BaseNode):
 
 
 class TextParameterScalingNode(ParameterScalingNode):
-    NODE_NAME = 'Parameter Scaling'
+    NODE_NAME = 'Scaling Function'
 
     def __init__(self):
         super(TextParameterScalingNode, self).__init__()
@@ -315,6 +315,7 @@ def property_changed(node, name, value):
                         mapping.add_synth_mapping(classes, i.synthdef)
     elif isinstance(node, ObjectParameterNode):
         if name == 'parameter':
+            node.set_name(value)
             for synth, params in node.connected_parameters.items():
                 for p in params:
                     mapping.modify_parameter_mapping(synth, p, obj_attr=value)
@@ -393,4 +394,5 @@ def node_created(node):
             for synth, params in n.connected_parameters.items():
                 for p in params:
                     mapping.modify_parameter_mapping(synth, p, scaling=n.scaling)
-
+    if isinstance(node, ObjectParameterNode):
+        node.set_name(str(node.get_property('parameter')))
