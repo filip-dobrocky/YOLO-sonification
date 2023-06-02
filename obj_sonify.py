@@ -17,13 +17,15 @@ FPS_SMOOTHNESS = 1.2
 synth_map = dict()
 buffers = dict()
 
-logging.disable(logging.CRITICAL)
+logging.disable(logging.DEBUG)
+supriya.osc.osc_protocol_logger.setLevel(logging.WARNING)
 
 threads_running = True
 
 
 def add_synth(id, class_id, synthdef):
-    s = synths.server.add_synth(synthdef, add_action='addBefore', fx_bus=fx_bus.bus_id)
+    s = synths.server.add_synth(synthdef, add_action=supriya.AddAction.ADD_BEFORE, fx_bus=fx_bus.bus_id,
+                                out_bus=out_bus.bus_id)
     if synthdef == synths.grainer:
         buf_id, _ = synths.random_class_buffer(class_id)
         s['buffer_id'] = buf_id
@@ -89,8 +91,9 @@ def process():
         for o in deleted:
             if o.id not in synth_map:
                 break
-            for s in synth_map[o.id]:
+            for s in synth_map[o.id].copy():
                 s['gate'] = 0
+                synth_map[o.id].remove(s)
             synth_map.pop(o.id)
 
         for o in all:
@@ -109,17 +112,21 @@ def process():
 
 
 if __name__ == '__main__':
-    print('cuda ' + ('not ' if not torch.cuda.is_available() else '') + 'available')
+    print('Cuda ' + ('not ' if not torch.cuda.is_available() else '') + 'available.')
 
     parser = argparse.ArgumentParser(description='Video sonification based on object tracking')
-    parser.add_argument('--source', type=str, default='0')
+    parser.add_argument('--buffer', type=int, default='3')
     opt = parser.parse_args()
-    src = opt.source
+    buf_len = opt.buffer
 
-    tracker = Tracker()
+    tracker = Tracker(buf_len=buf_len)
 
     fx_bus = synths.server.add_bus_group(2, 'audio')
-    rev = synths.server.add_synth(synths.reverb, in_bus=fx_bus.bus_id)
+    out_bus = synths.server.add_bus_group(2, 'audio')
+    rev = synths.server.add_synth(synths.reverb, in_bus=fx_bus.bus_id, out_bus=out_bus.bus_id)
+    limiter = synths.server.add_synth(synths.limiter, level=1.0, duration=0.01,
+                                      in_bus=out_bus.bus_id,
+                                      add_action=supriya.AddAction.ADD_TO_TAIL)
 
     mapping.norm_x = lambda x: x / tracker.video_size[0]
     mapping.norm_y = lambda x: x / tracker.video_size[1]
@@ -138,5 +145,7 @@ if __name__ == '__main__':
     gui.run()
 
     threads_running = False
-
+    read_thread.join(1)
+    process_thread.join(1)
+    display_thread.join(1)
     synths.server.quit()

@@ -7,7 +7,7 @@ note_names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
 
 def expand_f_scale(freqs):
-    min_f = 20
+    min_f = 0.5
     max_f = 20_000
 
     expanded = freqs.copy()

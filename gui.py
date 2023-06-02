@@ -1,34 +1,27 @@
-import os
-import signal
-
 from Qt import QtCore, QtWidgets
 from NodeGraphQt import NodeGraph, BaseNode, NodeBaseWidget, NodesPaletteWidget
 from text_completer import CompleterTextEdit
 import qdarktheme
 import cv2
-
 import nodes
 
 tracker = None
 
 
 def list_camera_ports():
-    non_working_ports = []
     dev_port = 0
-    working_ports = []
-    available_ports = []
-    while len(non_working_ports) < 6:  # if there are more than 5 non working ports stop the testing.
+    non_working_ports = 0
+    working_ports = {}
+    while non_working_ports < 6:  # if there are more than 5 non working ports stop the testing.
         camera = cv2.VideoCapture(dev_port)
         if not camera.isOpened():
-            non_working_ports.append(str(dev_port))
+            non_working_ports += 1
         else:
             is_reading, img = camera.read()
-            w = camera.get(3)
-            h = camera.get(4)
+            w = int(camera.get(3))
+            h = int(camera.get(4))
             if is_reading:
-                working_ports.append(str(dev_port))
-            else:
-                available_ports.append(str(dev_port))
+                working_ports[f'{dev_port}: {w}x{h}'] = str(dev_port)
         dev_port += 1
     return working_ports
 
@@ -38,7 +31,14 @@ class MainWindow(QtWidgets.QMainWindow):
         super(MainWindow, self).__init__()
         self.graph = NodeGraph()
         self.graph.set_context_menu_from_file('./hotkeys.json')
-
+        menu_bar = QtWidgets.QMenuBar()
+        menu = self.graph.context_menu().qmenu
+        menu_bar.addMenu(menu.get_menu('&File'))
+        menu_bar.addMenu(menu.get_menu('&Edit'))
+        menu_bar.addMenu(menu.get_menu('&Nodes'))
+        self.setMenuBar(menu_bar)
+        self.setWindowTitle('YOLO Sonification')
+        
         self.graph.register_nodes([*nodes.synth_nodes,
                                    nodes.ClassesRangeSpecifierNode,
                                    nodes.ClassesTextSpecifierNode,
@@ -54,9 +54,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         graph_widget = self.graph.widget
 
-        # TODO: load default
+        self.graph.load_session('patches/default-patch.json')
 
-        self.graph.auto_layout_nodes()
         self.graph.clear_selection()
         self.graph.fit_to_selection()
 
@@ -65,21 +64,24 @@ class MainWindow(QtWidgets.QMainWindow):
         nodes_palette.set_category_label('nodes.synths', 'Synth')
         nodes_palette.set_category_label('nodes.classes', 'Object Classes')
         nodes_palette.set_category_label('nodes.parameters', 'Object Parameters')
+        nodes_palette.setMaximumHeight(250)
 
         tracker_panel = TrackerPanel()
 
-        # TODO: layout -> QSplitter
-        v_layout = QtWidgets.QVBoxLayout()
-        v_layout.addWidget(graph_widget, 3)
-        v_layout.addWidget(nodes_palette)
+        v_splitter = QtWidgets.QSplitter(orientation=QtCore.Qt.Vertical)
+        v_splitter.addWidget(graph_widget)
+        v_splitter.addWidget(nodes_palette)
 
-        h_layout = QtWidgets.QHBoxLayout()
-        h_layout.addLayout(tracker_panel)
-        h_layout.addLayout(v_layout, 7)
+        h_splitter = QtWidgets.QSplitter()
+        panel_widget = QtWidgets.QWidget()
+        panel_widget.setLayout(tracker_panel)
+        panel_widget.setMaximumWidth(500)
+        h_splitter.addWidget(panel_widget)
+        h_splitter.addWidget(v_splitter)
+        h_splitter.setStretchFactor(0, 1)
+        h_splitter.setStretchFactor(1, 4)
 
-        central_widget = QtWidgets.QWidget(self)
-        self.setCentralWidget(central_widget)
-        central_widget.setLayout(h_layout)
+        self.setCentralWidget(h_splitter)
 
     def session_changed(self, session):
         nodes = self.graph.all_nodes()
@@ -105,7 +107,8 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         self.file_radio = QtWidgets.QRadioButton('Video file')
         self.file_radio.toggled.connect(self.file_source_toggled)
 
-        self.cam_combo.addItems(list_camera_ports())
+        self.cam_dict = list_camera_ports()
+        self.cam_combo.addItems(self.cam_dict.keys())
         self.cam_combo.currentTextChanged.connect(self.cam_source_changed)
         self.cam_source_changed(self.cam_combo.currentText())
         self.cam_radio.setChecked(True)
@@ -152,6 +155,15 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         self.conf_slider.valueChanged.connect(self.conf_changed)
         self.size_slider.valueChanged.connect(self.img_size_changed)
         self.classes_text.textChanged.connect(self.classes_changed)
+        self.face_checkbox = QtWidgets.QCheckBox('Detect faces', checked=tracker.detect_faces)
+        self.boxes_checkbox = QtWidgets.QCheckBox('Draw boxes', checked=tracker.display_boxes)
+        self.moving_checkbox = QtWidgets.QCheckBox('Moving camera', checked=tracker.moving_cam)
+        self.emotions_checkbox = QtWidgets.QCheckBox('Draw emotions', checked=tracker.display_emotions,
+                                                     enabled=self.face_checkbox.isChecked())
+        self.moving_checkbox.toggled.connect(self.moving_toggled)
+        self.face_checkbox.toggled.connect(self.face_toggled)
+        self.boxes_checkbox.toggled.connect(self.boxes_toggled)
+        self.emotions_checkbox.toggled.connect(self.emotions_toggled)
 
         vbox = QtWidgets.QVBoxLayout()
         vbox.addWidget(self.classes_checkbox)
@@ -162,6 +174,12 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         vbox.addWidget(self.iou_slider)
         vbox.addWidget(self.size_label)
         vbox.addWidget(self.size_slider)
+        vbox.addWidget(self.moving_checkbox)
+        vbox.addWidget(self.face_checkbox)
+        hbox = QtWidgets.QHBoxLayout()
+        hbox.addWidget(self.boxes_checkbox)
+        hbox.addWidget(self.emotions_checkbox)
+        vbox.addLayout(hbox)
         vbox.addStretch(0)
         self.tracker_box.setLayout(vbox)
 
@@ -180,7 +198,7 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
 
     def cam_source_changed(self, source):
         if tracker is not None and len(source):
-            tracker.load_video(source)
+            tracker.load_video(self.cam_dict[source])
 
     def load_file(self):
         dialog = QtWidgets.QFileDialog()
@@ -189,8 +207,8 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
         if dialog.exec_():
             files = dialog.selectedFiles()
             tracker.load_video(files[0])
-        self.timer.start()
-        self.play_button.toggle()
+            self.timer.start()
+            self.play_button.setText('Stop' if tracker.running else 'Play')
 
     def play_toggled(self, checked):
         self.play_button.setText('Stop' if checked else 'Play')
@@ -204,6 +222,8 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
             self.video_slider.blockSignals(True)
             self.video_slider.setSliderPosition(tracker.video_progress)
             self.video_slider.blockSignals(False)
+            if not tracker.running and self.play_button.text() == 'Stop':
+                self.play_button.setText('Play')
 
     def iou_changed(self, value):
         tracker.iou_threshold = value
@@ -233,6 +253,19 @@ class TrackerPanel(QtWidgets.QVBoxLayout):
             except ValueError:
                 print('Invalid name', n)
         tracker.classes = classes
+
+    def boxes_toggled(self, checked):
+        tracker.display_boxes = checked
+
+    def emotions_toggled(self, checked):
+        tracker.display_emotions = checked
+
+    def face_toggled(self, checked):
+        tracker.detect_faces = checked
+        self.emotions_checkbox.setEnabled(checked)
+
+    def moving_toggled(self, checked):
+        tracker.moving_cam = checked
 
 
 class LabeledFloatSlider(QtWidgets.QWidget):
